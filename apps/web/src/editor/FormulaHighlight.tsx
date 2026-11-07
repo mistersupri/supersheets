@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react';
-import { REF_COLORS } from './render';
 
 /**
  * Colours a formula for display behind a transparent input: cell references
@@ -22,7 +21,7 @@ export function highlightFormula(text: string): ReactNode[] {
     if (str !== undefined) style = { color: 'var(--accent)' };
     else if (ref !== undefined) {
       // Only same-sheet references get a grid box, so only they take a box colour.
-      style = sheet ? { color: 'var(--brand)' } : { color: REF_COLORS[refIndex++ % REF_COLORS.length], fontWeight: 500 };
+      style = sheet ? { color: 'var(--brand)' } : { color: `var(--ref-${(refIndex++ % 6) + 1})`, fontWeight: 500 };
     } else if (fn !== undefined) style = { color: 'var(--ink)', fontWeight: 600 };
     else if (num !== undefined) style = { color: 'var(--ink-2)' };
     else if (errTok !== undefined) style = { color: 'var(--danger)' };

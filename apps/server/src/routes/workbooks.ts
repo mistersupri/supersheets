@@ -91,12 +91,13 @@ workbooksRouter.post(
 workbooksRouter.get(
   '/:id',
   h(async (req, res) => {
-    const { role, workbook } = await roleFor(req.user!.id, req.params.id as string);
+    const uid = req.user?.id ?? null;
+    const { role, workbook } = await roleFor(uid, req.params.id as string);
     if (role === 'none') throw notFound('Workbook tidak ditemukan atau Anda tidak memiliki akses');
     const sheets = await prisma.worksheet.findMany({ where: { workbookId: workbook.id }, orderBy: { position: 'asc' }, select: { id: true } });
     const owner = await prisma.user.findUnique({ where: { id: workbook.ownerId }, select: { id: true, name: true, email: true } });
-    const star = await prisma.workbookStar.findUnique({ where: { userId_workbookId: { userId: req.user!.id, workbookId: workbook.id } } });
-    if (!workbook.isTrashed) await recordOpen(req.user!.id, workbook.id);
+    const star = uid ? await prisma.workbookStar.findUnique({ where: { userId_workbookId: { userId: uid, workbookId: workbook.id } } }) : null;
+    if (uid && !workbook.isTrashed) await recordOpen(uid, workbook.id);
     res.json(
       jsonSafe({
         workbook: {
@@ -123,7 +124,7 @@ workbooksRouter.get(
 workbooksRouter.get(
   '/:id/cells',
   h(async (req, res) => {
-    const { workbook } = await requireCapability(req.user!.id, req.params.id as string, 'view');
+    const { workbook } = await requireCapability(req.user?.id ?? null, req.params.id as string, 'view');
     const sheets = await prisma.worksheet.findMany({ where: { workbookId: workbook.id }, select: { id: true } });
     const out: Record<string, Awaited<ReturnType<typeof loadSheetCells>>> = {};
     for (const s of sheets) out[s.id] = await loadSheetCells(s.id);
@@ -251,7 +252,7 @@ workbooksRouter.post(
 workbooksRouter.get(
   '/:id/worksheets',
   h(async (req, res) => {
-    const { workbook } = await requireCapability(req.user!.id, req.params.id as string, 'view');
+    const { workbook } = await requireCapability(req.user?.id ?? null, req.params.id as string, 'view');
     const sheets = await prisma.worksheet.findMany({ where: { workbookId: workbook.id }, orderBy: { position: 'asc' }, select: { id: true } });
     res.json({ sheets: await Promise.all(sheets.map((s) => sheetPayload(s.id))) });
   }),

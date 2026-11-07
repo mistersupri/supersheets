@@ -20,10 +20,11 @@ export default function EditorPage() {
   const title = useStore(ctrl.store, (s) => s.workbook?.title);
 
   useEffect(() => {
-    if (!me.data) return;
-    void ctrl.load(me.data.user);
+    if (me.isLoading) return;
+    ctrl.guest = !me.data;
+    void ctrl.load(me.data?.user ?? { id: 'guest', name: 'Tamu' });
     return () => ctrl.dispose();
-  }, [ctrl, me.data]);
+  }, [ctrl, me.data, me.isLoading]);
 
   useEffect(() => {
     document.title = title ? `${title} - OpenSheet` : 'OpenSheet';
@@ -49,6 +50,11 @@ export default function EditorPage() {
             : loadError}
         </p>
         <div className="flex gap-2">
+          {!me.data && (
+            <Link to={`/login?next=${encodeURIComponent(window.location.pathname)}`} className="press inline-flex h-9 items-center rounded-md bg-brand px-3.5 text-sm font-medium text-brand-ink hover:bg-brand-hover max-md:h-11">
+              Masuk untuk membuka
+            </Link>
+          )}
           {loading === 'error' && (
             <Button variant="primary" onClick={() => window.location.reload()}>
               Muat ulang

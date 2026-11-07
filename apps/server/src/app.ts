@@ -59,7 +59,10 @@ export function createApp() {
     res.json({ ok: true });
   });
   api.use('/auth', authRouter);
-  api.use(requireAuth);
+  // Signed-out visitors may read shared workbooks when the admin allows guests;
+  // each handler still checks the workbook's link setting.
+  const GUEST_GET = /^\/(workbooks\/[0-9a-f-]{36}(\/(cells|worksheets|comments|export\/(xlsx|ods|csv|tsv|pdf)))?|worksheets\/[0-9a-f-]{36}\/range|functions)$/;
+  api.use((req, res, next) => (req.user || (req.method === 'GET' && GUEST_GET.test(req.path)) ? next() : requireAuth(req, res, next)));
   api.get('/functions', (_req, res) => {
     res.json({ functions: listFunctions() });
   });

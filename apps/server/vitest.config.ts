@@ -10,6 +10,9 @@ export default defineConfig({
       DATABASE_URL: process.env.TEST_DATABASE_URL ?? 'postgresql://opensheet:opensheet@localhost:5432/opensheet_test',
       APP_URL: 'http://localhost:5173',
       NODE_ENV: 'test',
+      STORAGE: 'local',
+      SMTP_URL: 'smtp://127.0.0.1:2526',
+      STORAGE_DIR: '.test-uploads',
     },
   },
 });

@@ -16,3 +16,6 @@ Sumber arah: PRD bagian 5.1 (modern, minimalis, profesional, bersih, responsif, 
 | Gerak: menu/popover 150 ms ease-out dari pemicu, dialog 200 ms, lembar bawah ponsel 280 ms | Mengikuti prinsip Emil Kowalski: navigasi sel, seleksi, dan pintasan keyboard tidak dianimasikan karena dipakai ratusan kali sehari. `prefers-reduced-motion` dihormati. |
 | Tema terang dan gelap dengan toggle | Tidak ada alasan merek untuk memaksa satu tema; warna sel pilihan pengguna dijaga tetap terbaca di kedua tema. |
 | Warna dokumen dan warna sel | Data milik pengguna (PRD 4.3, 4.5), bukan palet antarmuka. |
+| Pewarnaan formula di formula bar dan editor sel | Warna referensi mengikuti urutan dan warna kotak referensi di grid, jadi mata bisa mencocokkan teks dengan sel yang dirujuk. Fungsi tebal, teks berwarna aksen, angka abu. |
+| Garis putus-putus di sekitar hasil array | Menunjukkan area yang diisi satu formula (FILTER, SORT, QUERY, ...). Hijau bila tampil, merah bila terhalang data. |
+| Tinggi baris otomatis | Baris tanpa tinggi manual tumbuh mengikuti teks terbungkus dan huruf besar, sehingga isi tidak terpotong. |

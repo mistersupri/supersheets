@@ -142,7 +142,7 @@ async function main() {
   for (const [k, a] of rows) {
     if (!a.length) continue;
     console.log(
-      `${k.padEnd(15)} ${String(a.length).padStart(5)} ${pct(a, 50).toFixed(0).padStart(6)} ${pct(a, 95).toFixed(0).padStart(7)} ${pct(a, 99).toFixed(0).padStart(7)} ${Math.max(...a).toFixed(0).padStart(7)}`,
+      `${k.padEnd(15)} ${String(a.length).padStart(5)} ${pct(a, 50).toFixed(0).padStart(6)} ${pct(a, 95).toFixed(0).padStart(7)} ${pct(a, 99).toFixed(0).padStart(7)} ${a.reduce((m, x) => (x > m ? x : m), 0).toFixed(0).padStart(7)}`,
     );
   }
   console.log('errors:', Object.keys(errors).length ? errors : 'none');

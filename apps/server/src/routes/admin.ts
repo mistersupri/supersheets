@@ -72,7 +72,7 @@ adminRouter.get(
 adminRouter.patch(
   '/settings',
   h(async (req, res) => {
-    const body = parse(z.object({ registrationEnabled: z.boolean().optional(), linkSharingEnabled: z.boolean().optional() }), req.body);
+    const body = parse(z.object({ registrationEnabled: z.boolean().optional(), linkSharingEnabled: z.boolean().optional(), guestLinkEnabled: z.boolean().optional() }), req.body);
     const settings = await updateSettings(body);
     await audit(req, 'admin.settings', undefined, body);
     res.json({ settings });

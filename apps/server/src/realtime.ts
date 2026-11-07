@@ -19,6 +19,7 @@ const COLORS = ['#B4481F', '#1F6E8C', '#7A3E9D', '#2F7D32', '#A15C00', '#C2185B'
  */
 interface SocketData {
   user: AuthUser;
+  guest?: boolean;
   presence?: Record<string, PresenceUser>; // workbookId -> presence
 }
 
@@ -82,8 +83,9 @@ export function initRealtime(server: HttpServer, allowedOrigin: string) {
     try {
       const token = parseCookie(socket.handshake.headers.cookie, SESSION_COOKIE);
       const found = await userFromToken(token);
-      if (!found) return next(new Error('unauthorized'));
-      (socket.data as SocketData).user = found.user;
+      // Without a session the socket is a guest; joining still requires link access.
+      (socket.data as SocketData).user = found?.user ?? { id: `guest:${socket.id}`, name: 'Tamu', email: '', role: 'guest', avatar: null };
+      (socket.data as SocketData).guest = !found;
       next();
     } catch (e) {
       next(e as Error);
@@ -99,7 +101,7 @@ export function initRealtime(server: HttpServer, allowedOrigin: string) {
     socket.on('workbook:join', async (payload: { workbookId?: string }, ack?: (r: unknown) => void) => {
       try {
         const workbookId = String(payload?.workbookId ?? '');
-        const { role } = await roleFor(user.id, workbookId);
+        const { role } = await roleFor(data.guest ? null : user.id, workbookId);
         if (role === 'none') return ack?.({ ok: false, error: 'forbidden' });
         socket.join(room(workbookId));
         joined.add(workbookId);

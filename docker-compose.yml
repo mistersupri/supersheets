@@ -5,16 +5,26 @@ services:
       POSTGRES_USER: opensheet
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opensheet}
       POSTGRES_DB: opensheet
+    command: postgres -c max_connections=200
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U opensheet']
       interval: 5s
       retries: 10
+  redis:
+    image: redis:7
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      retries: 10
   app:
     build: .
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://opensheet:${POSTGRES_PASSWORD:-opensheet}@db:5432/opensheet
@@ -23,7 +33,16 @@ services:
       TRUST_PROXY: ${TRUST_PROXY:-0}
       SMTP_URL: ${SMTP_URL:-}
       MAIL_FROM: ${MAIL_FROM:-OpenSheet <no-reply@localhost>}
+      # One process per CPU core, sharing realtime rooms through Redis.
+      WORKERS: ${WORKERS:-2}
+      REDIS_URL: redis://redis:6379
+      DB_POOL_MAX: ${DB_POOL_MAX:-20}
+      STORAGE: ${STORAGE:-local}
+      STORAGE_DIR: /data/uploads
+    volumes:
+      - uploads:/data/uploads
     ports:
       - '3000:3000'
 volumes:
   pgdata:
+  uploads:

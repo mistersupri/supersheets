@@ -21,6 +21,7 @@ import { Icon } from '../components/icons';
 import { Avatar, Button, Checkbox, Dialog, Field, IconButton, Input, Select, Spinner } from '../components/ui';
 import { api, errorMessage } from '../lib/api';
 import { useMe } from '../lib/auth';
+import { dateTime } from '../lib/format';
 import { clipboardAction, insertCheckbox, useWorkbookActions } from './chrome';
 import { ColorPicker } from './ColorPicker';
 import { useCtrl, useEditor } from './context';
@@ -54,6 +55,7 @@ export function EditorDialogs() {
       <FunctionsDialog />
       <ImportDialog />
       <FilterViewDialog />
+      <FilesDialog />
       <MobileFormulaSheet />
       <MobileFormatSheet />
       <MobileMenuSheet />
@@ -67,6 +69,7 @@ interface Perms {
   owner: { id: string; name: string; email: string };
   linkAccess: string;
   linkSharingEnabled: boolean;
+  guestLinkEnabled?: boolean;
   permissions: { id: string; permission: string; user: { id: string; name: string; email: string } }[];
   invitations: { id: string; email: string; permission: string }[];
 }
@@ -198,6 +201,9 @@ function ShareDialog() {
             <option value="edit">Siapa pun yang login dan punya tautan: Editor</option>
           </Select>
           {!q.data.linkSharingEnabled && <p className="text-xs text-ink-2">Admin menonaktifkan berbagi lewat tautan.</p>}
+          {q.data.linkSharingEnabled && q.data.guestLinkEnabled && q.data.linkAccess !== 'restricted' && (
+            <p className="text-xs text-ink-2">Pengunjung tanpa akun juga dapat membuka tautan ini, hanya sebagai Pembaca.</p>
+          )}
           <div className="flex gap-2">
             <Input readOnly value={link} aria-label="Tautan workbook" className="addr" onFocus={(e) => e.target.select()} />
             <Button
@@ -1090,8 +1096,8 @@ function ImportDialog() {
   const inputRef = useRef<HTMLInputElement>(null);
   const run = async () => {
     if (!file) return;
-    const kind = /\.xlsx$/i.test(file.name) ? 'xlsx' : /\.(csv|tsv|txt)$/i.test(file.name) ? 'csv' : null;
-    if (!kind) return toast.error('Format yang didukung: .xlsx, .csv, .tsv');
+    const kind = /\.xlsx$/i.test(file.name) ? 'xlsx' : /\.ods$/i.test(file.name) ? 'ods' : /\.(csv|tsv|txt)$/i.test(file.name) ? 'csv' : null;
+    if (!kind) return toast.error('Format yang didukung: .xlsx, .ods, .csv, .tsv');
     const fd = new FormData();
     fd.append('file', file);
     if (target === 'here') fd.append('workbookId', ctrl.workbookId);
@@ -1114,7 +1120,7 @@ function ImportDialog() {
       open={open}
       onOpenChange={(o) => !o && close()}
       title="Impor berkas"
-      description="XLSX, CSV atau TSV, maksimal 10 MB. Nilai, formula, format dasar, sel gabungan, lebar kolom dan tinggi baris dibaca dari XLSX."
+      description="XLSX, ODS, CSV atau TSV, maksimal 10 MB. Nilai, formula, format dasar, sel gabungan dan lebar kolom dibaca dari XLSX dan ODS."
       footer={
         <>
           <Button onClick={close}>Batal</Button>
@@ -1125,7 +1131,7 @@ function ImportDialog() {
       }
     >
       <div className="flex flex-col gap-3">
-        <input ref={inputRef} type="file" accept=".xlsx,.csv,.tsv" className="sr-only" tabIndex={-1} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        <input ref={inputRef} type="file" accept=".xlsx,.ods,.csv,.tsv" className="sr-only" tabIndex={-1} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
         <div className="flex items-center gap-3">
           <Button onClick={() => inputRef.current?.click()}>
             <Icon.Upload /> Pilih berkas
@@ -1142,6 +1148,42 @@ function ImportDialog() {
           </label>
         </fieldset>
       </div>
+    </Dialog>
+  );
+}
+
+function FilesDialog() {
+  const { open, close, ctrl } = useDialog('files');
+  const q = useQuery({
+    queryKey: ['files', ctrl.workbookId],
+    enabled: open,
+    queryFn: () => api.get<{ files: { id: string; filename: string; size: number; createdAt: string }[] }>(`/api/workbooks/${ctrl.workbookId}/files`),
+  });
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && close()} title="Berkas asli impor" description="Salinan berkas yang diimpor ke workbook ini, persis seperti saat diunggah.">
+      {q.isLoading ? (
+        <Spinner />
+      ) : q.isError ? (
+        <p className="text-sm text-danger">{errorMessage(q.error)}</p>
+      ) : !q.data?.files.length ? (
+        <p className="text-sm text-ink-2">Belum ada berkas yang diimpor ke workbook ini.</p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-line">
+          {q.data.files.map((f) => (
+            <li key={f.id} className="flex items-center gap-3 py-2">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-ink">{f.filename}</p>
+                <p className="text-xs text-ink-2">
+                  {(f.size / 1024).toLocaleString('id-ID', { maximumFractionDigits: 1 })} KB · {dateTime(f.createdAt)}
+                </p>
+              </div>
+              <a className="press inline-flex h-8 items-center gap-1.5 rounded-md border border-line-2 px-2.5 text-[13px] hover:bg-surface-2 max-md:h-11" href={`/api/workbooks/${ctrl.workbookId}/files/${f.id}`} download>
+                <Icon.Download size={14} /> Unduh
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
     </Dialog>
   );
 }
@@ -1453,6 +1495,7 @@ function MobileMenuSheet() {
             Impor berkas
           </Row>
           <Row onClick={go(() => actions.download('xlsx'))}>Unduh .xlsx</Row>
+          <Row onClick={go(() => actions.download('ods'))}>Unduh .ods</Row>
           <Row onClick={go(() => actions.download('csv'))}>Unduh .csv (sheet aktif)</Row>
           <Row onClick={go(() => actions.download('pdf'))}>Unduh .pdf</Row>
           <Row onClick={go(() => actions.duplicate())}>Buat salinan</Row>

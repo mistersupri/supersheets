@@ -38,6 +38,7 @@ import { createStore, type StoreApi } from 'zustand/vanilla';
 import { toast } from 'sonner';
 import { api, errorMessage } from '../lib/api';
 import { Axis } from './geometry';
+import { fontFor, wrapLines } from './render';
 import { CellSnapshot, CellWrite, SheetPatch, SheetPayload, UndoEntry, WorkbookModel } from './model';
 import { SaveStatus, SyncManager } from './sync';
 
@@ -103,6 +104,7 @@ export type DialogName =
   | 'functions'
   | 'rename'
   | 'import'
+  | 'files'
   | 'filterViews'
   | 'mobileFormula'
   | 'mobileFormat'
@@ -163,6 +165,8 @@ export class EditorController {
   private clipboard: Clipboard | null = null;
   userId = '';
   userName = '';
+  /** Signed-out visitor opening a shared link (read-only). */
+  guest = false;
   private axisCache = new Map<string, { version: number; key: string; rows: Axis; cols: Axis }>();
   private filterCache = new Map<string, { version: number; key: string; rows: Set<number> }>();
   private metaTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -432,7 +436,11 @@ export class EditorController {
     for (const [r, h] of Object.entries(md.rowHeights ?? {})) rowSizes.set(Number(r), h);
     for (const r of md.hiddenRows ?? []) rowSizes.set(r, 0);
     for (const r of hiddenFilter) rowSizes.set(r, 0);
-    // Rows grow to fit wrapped text is not automatic; explicit heights only.
+    // Rows without a manual height grow to fit wrapped text and large fonts.
+    for (const [r, h] of this.autoRowHeights(sheet.id)) {
+      if (md.rowHeights?.[r] !== undefined || rowSizes.get(r) === 0) continue;
+      if (h > (sheet.defaultRowHeight || DEFAULT_ROW_H)) rowSizes.set(r, h);
+    }
     const colSizes = new Map<number, number>();
     for (const [c, w] of Object.entries(md.colWidths ?? {})) colSizes.set(Number(c), w);
     for (const c of md.hiddenCols ?? []) colSizes.set(c, 0);
@@ -444,6 +452,44 @@ export class EditorController {
     };
     this.axisCache.set(sheet.id, out);
     return out;
+  }
+
+  private measureCtx: CanvasRenderingContext2D | null = null;
+  private autoHeightCache = new Map<string, { version: number; heights: Map<number, number> }>();
+
+  /** Heights needed by wrapped or large text, per row. */
+  autoRowHeights(sheetId: string): Map<number, number> {
+    const cached = this.autoHeightCache.get(sheetId);
+    if (cached && cached.version === this.model.version) return cached.heights;
+    const heights = new Map<number, number>();
+    const sheet = this.model.sheet(sheetId);
+    if (sheet && typeof document !== 'undefined') {
+      this.measureCtx ??= document.createElement('canvas').getContext('2d');
+      const ctx = this.measureCtx;
+      const colW = (c: number) => sheet.metadata.colWidths?.[c] ?? sheet.defaultColumnWidth ?? DEFAULT_COL_W;
+      for (const [key, style] of sheet.styles) {
+        if (!style.wrap && !(style.fontSize && style.fontSize > 11)) continue;
+        const [r, c] = key.split(':').map(Number);
+        if (this.mergeAtSheet(sheet, r, c)) continue;
+        const text = displayText(this.model.value(sheetId, r, c), style);
+        if (!text) continue;
+        const { font, px } = fontFor(style);
+        const lineH = Math.round(px * 1.3);
+        let lines = 1;
+        if (style.wrap && ctx) {
+          ctx.font = font;
+          lines = wrapLines(text, colW(c) - 8 - (style.indent ?? 0) * 10, (t) => ctx.measureText(t).width).length;
+        }
+        const need = Math.min(400, lines * lineH + 8);
+        if (need > (heights.get(r) ?? 0)) heights.set(r, need);
+      }
+    }
+    this.autoHeightCache.set(sheetId, { version: this.model.version, heights });
+    return heights;
+  }
+
+  private mergeAtSheet(sheet: { metadata: SheetMetadata }, row: number, col: number) {
+    return (sheet.metadata.merges ?? []).some((m) => row >= m.r1 && row <= m.r2 && col >= m.c1 && col <= m.c2);
   }
 
   activeFilter(): SheetFilter | null {

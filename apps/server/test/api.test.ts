@@ -1,4 +1,6 @@
 import ExcelJS from 'exceljs';
+import { simpleParser } from 'mailparser';
+import { SMTPServer } from 'smtp-server';
 import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app';
@@ -27,7 +29,21 @@ let ownerUser: { id: string; role: string };
 let workbookId: string;
 let sheetId: string;
 
+// A local SMTP server receives every email the API sends during the tests.
+const mails: { to: string; subject: string; text: string }[] = [];
+const smtp = new SMTPServer({
+  authOptional: true,
+  disabledCommands: ['STARTTLS'],
+  onData(stream, session, cb) {
+    simpleParser(stream).then((m) => {
+      mails.push({ to: session.envelope.rcptTo.map((r) => r.address).join(','), subject: m.subject ?? '', text: m.text ?? '' });
+      cb();
+    }, cb);
+  },
+});
+
 beforeAll(async () => {
+  await new Promise<void>((r) => smtp.listen(2526, '127.0.0.1', r));
   owner = agent();
   editor = agent();
   viewer = agent();
@@ -358,5 +374,108 @@ describe('row and column structure', () => {
     expect(res.status).toBe(200);
     const back = await owner.get(`/api/worksheets/${sh}/range?range=A2:D2`);
     expect(back.body.cells.map((c: { col: number; raw: string }) => `${c.col}=${c.raw}`)).toEqual(['0=1', '1=x', '2=y', '3==SUM(A2:A20001)']);
+  });
+});
+
+describe('ODS', () => {
+  it('exports and re-imports formulas, values, styles and merges', async () => {
+    const id = (await owner.post('/api/workbooks').set(H).send({ title: 'Ods' })).body.id;
+    const sh = (await owner.get(`/api/workbooks/${id}`)).body.sheets[0].id;
+    await owner.post(`/api/worksheets/${sh}/cells/batch`).set(H).send({
+      baseRevision: 0,
+      clientId: 'client-ods',
+      ops: [
+        { sheetId: sh, row: 0, col: 0, raw: 'Judul', style: { bold: true, backgroundColor: '#D9EAD3' } },
+        { sheetId: sh, row: 1, col: 0, raw: '4' },
+        { sheetId: sh, row: 2, col: 0, raw: '6' },
+        { sheetId: sh, row: 3, col: 0, raw: '=SUM(A2:A3)' },
+        { sheetId: sh, row: 3, col: 1, raw: '=IF(A4>5,"besar","kecil")' },
+        { sheetId: sh, row: 4, col: 0, raw: '07/11/2026', style: { numberFormat: 'date' } },
+      ],
+    });
+    await owner.patch(`/api/worksheets/${sh}`).set(H).send({ metadata: { merges: [{ r1: 0, c1: 0, r2: 0, c2: 1 }], colWidths: { 0: 150 } } });
+    const out = await owner.get(`/api/workbooks/${id}/export/ods`).buffer(true).parse((res, cb) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => cb(null, Buffer.concat(chunks)));
+    });
+    expect(out.status).toBe(200);
+    expect(out.headers['content-type']).toBe('application/vnd.oasis.opendocument.spreadsheet');
+    const imp = await owner.post('/api/import/ods').set(H).attach('file', out.body, 'salinan.ods');
+    expect(imp.status).toBe(201);
+    const meta = await owner.get(`/api/workbooks/${imp.body.id}`);
+    const sheet = meta.body.sheets[0];
+    expect(sheet.metadata.merges).toEqual([{ r1: 0, c1: 0, r2: 0, c2: 1 }]);
+    expect(sheet.metadata.colWidths['0']).toBe(150);
+    const cells = await owner.get(`/api/worksheets/${sheet.id}/range`);
+    const at = (r: number, c: number) => cells.body.cells.find((x: { row: number; col: number }) => x.row === r && x.col === c);
+    expect(at(0, 0)).toMatchObject({ raw: 'Judul', style: { bold: true, backgroundColor: '#D9EAD3' } });
+    expect(at(3, 0)).toMatchObject({ raw: '=SUM(A2:A3)', value: 10 });
+    expect(at(3, 1)).toMatchObject({ raw: '=IF(A4>5,"besar","kecil")', value: 'besar' });
+    expect(at(4, 0).style.numberFormat).toBe('date');
+  });
+});
+
+describe('guest access by link', () => {
+  it('is off by default, read-only when enabled, and never writes', async () => {
+    const id = (await owner.post('/api/workbooks').set(H).send({ title: 'Publik' })).body.id;
+    const guest = request.agent(app);
+    await owner.patch(`/api/workbooks/${id}/link`).set(H).send({ linkAccess: 'edit' });
+    expect((await guest.get(`/api/workbooks/${id}`)).status).toBe(404);
+    await owner.patch('/api/admin/settings').set(H).send({ guestLinkEnabled: true });
+    const meta = await guest.get(`/api/workbooks/${id}`);
+    expect(meta.status).toBe(200);
+    expect(meta.body.role).toBe('viewer');
+    expect((await guest.get(`/api/workbooks/${id}/cells`)).status).toBe(200);
+    expect((await guest.get(`/api/workbooks/${id}/export/csv`)).status).toBe(200);
+    const sheet = meta.body.sheets[0].id;
+    expect((await guest.post(`/api/worksheets/${sheet}/cells/batch`).set(H).send({ baseRevision: 0, clientId: 'guest-1', ops: [{ sheetId: sheet, row: 0, col: 0, raw: 'x' }] })).status).toBe(401);
+    expect((await guest.get('/api/workbooks')).status).toBe(401);
+    expect((await guest.get(`/api/workbooks/${id}/revisions`)).status).toBe(401);
+    await owner.patch(`/api/workbooks/${id}/link`).set(H).send({ linkAccess: 'restricted' });
+    expect((await guest.get(`/api/workbooks/${id}`)).status).toBe(404);
+    await owner.patch('/api/admin/settings').set(H).send({ guestLinkEnabled: false });
+  });
+});
+
+describe('original upload storage', () => {
+  it('keeps the imported file and serves it back only as a download', async () => {
+    const csv = Buffer.from('a,b\n1,2\n');
+    const imp = await owner.post('/api/import/csv').set(H).attach('file', csv, 'asli.csv');
+    const files = await owner.get(`/api/workbooks/${imp.body.id}/files`);
+    expect(files.body.files).toHaveLength(1);
+    expect(files.body.files[0].filename).toBe('asli.csv');
+    const dl = await owner.get(`/api/workbooks/${imp.body.id}/files/${files.body.files[0].id}`).buffer(true).parse((res, cb) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => cb(null, Buffer.concat(chunks)));
+    });
+    expect(dl.headers['content-type']).toBe('application/octet-stream');
+    expect(dl.headers['content-disposition']).toMatch(/^attachment/);
+    expect(Buffer.compare(dl.body, csv)).toBe(0);
+    expect((await stranger.get(`/api/workbooks/${imp.body.id}/files/${files.body.files[0].id}`)).status).toBe(404);
+  });
+});
+
+describe('email', () => {
+  it('sends a working password-reset link by SMTP', async () => {
+    const before = mails.length;
+    expect((await agent().post('/api/auth/forgot-password').set(H).send({ email: 'dodi@example.test' })).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 300));
+    const mail = mails.slice(before).find((m) => m.to === 'dodi@example.test');
+    expect(mail?.subject).toBe('Atur ulang kata sandi OpenSheet');
+    const token = /reset-password\?token=([\w-]+)/.exec(mail!.text)![1];
+    expect((await agent().post('/api/auth/reset-password').set(H).send({ token, password: 'dari-email-123' })).status).toBe(200);
+    const login = await agent().post('/api/auth/login').set(H).send({ email: 'dodi@example.test', password: 'dari-email-123' });
+    expect(login.status).toBe(200);
+  });
+  it('emails an invitation to someone without an account', async () => {
+    const id = (await owner.post('/api/workbooks').set(H).send({ title: 'Undangan' })).body.id;
+    const before = mails.length;
+    await owner.post(`/api/workbooks/${id}/share`).set(H).send({ email: 'baru@example.test', permission: 'viewer', message: 'Mohon dicek' });
+    await new Promise((r) => setTimeout(r, 300));
+    const mail = mails.slice(before).find((m) => m.to === 'baru@example.test');
+    expect(mail?.text).toContain('Mohon dicek');
+    expect(mail?.text).toContain(`/w/${id}`);
   });
 });

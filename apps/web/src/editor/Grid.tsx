@@ -9,7 +9,7 @@ import { isMobile, useCtrl, useEditor } from './context';
 import { displayText } from './controller';
 import { FilterPopover, ListPopover } from './GridPopovers';
 import { HEADER_H, HEADER_W } from './geometry';
-import { readTheme, REF_COLORS, Renderer, type Theme } from './render';
+import { readTheme, Renderer, type Theme } from './render';
 
 type Drag =
   | { kind: 'select'; pointerId: number }
@@ -49,7 +49,7 @@ export function Grid() {
 
   const refHighlights = useMemo(() => {
     if (!editing || !editing.value.startsWith('=') || editing.sheetId !== activeSheetId) return [];
-    const out: { range: RangeAddress; color: string }[] = [];
+    const out: { range: RangeAddress; index: number }[] = [];
     const re = /(?<![A-Za-z0-9_!'.])\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?(?![A-Za-z0-9_(!])/g;
     let m: RegExpExecArray | null;
     let i = 0;
@@ -57,7 +57,7 @@ export function Grid() {
     const src = editing.value.replace(/"[^"]*"/g, (s) => ' '.repeat(s.length));
     while ((m = re.exec(src))) {
       const r = parseRangeA1(m[0].replace(/\$/g, ''));
-      if (r) out.push({ range: r, color: REF_COLORS[i++ % REF_COLORS.length] });
+      if (r) out.push({ range: r, index: i++ });
     }
     return out;
   }, [editing, activeSheetId]);

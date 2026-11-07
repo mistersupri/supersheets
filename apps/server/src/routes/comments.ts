@@ -17,7 +17,7 @@ commentsRouter.get(
   '/workbooks/:id/comments',
   h(async (req, res) => {
     const id = req.params.id as string;
-    await requireCapability(req.user!.id, id, 'view');
+    await requireCapability(req.user?.id ?? null, id, 'view');
     const comments = await prisma.workbookComment.findMany({ where: { workbookId: id }, include, orderBy: { createdAt: 'asc' } });
     res.json({ comments });
   }),

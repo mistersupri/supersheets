@@ -16,6 +16,7 @@ export interface Theme {
   accent: string;
   danger: string;
   line2: string;
+  refs: string[];
   dark: boolean;
 }
 
@@ -36,6 +37,7 @@ export function readTheme(el: Element): Theme {
     accent: v('--accent'),
     danger: v('--danger'),
     line2: v('--line-2'),
+    refs: [1, 2, 3, 4, 5, 6].map((i) => v(`--ref-${i}`)),
     dark: cs.colorScheme === 'dark',
   };
 }
@@ -50,15 +52,15 @@ export interface View {
 export interface Overlay {
   fillPreview?: RangeAddress | null;
   resizeGuide?: { axis: 'row' | 'col'; pos: number } | null;
-  refHighlights?: { range: RangeAddress; color: string }[];
+  /** Ranges referenced by the formula being typed; `index` picks the theme colour. */
+  refHighlights?: { range: RangeAddress; index: number }[];
   presenceColors: Record<string, { color: string; name: string }>;
 }
 
 const FONT_FAMILY = '"IBM Plex Sans", system-ui, sans-serif';
 export const DEFAULT_FONT_PT = 10;
-export const REF_COLORS = ['#2563A8', '#B4481F', '#7A3E9D', '#2F7D32', '#A15C00', '#C2185B'];
 
-function fontFor(style: CellStyle | null): { font: string; px: number } {
+export function fontFor(style: CellStyle | null): { font: string; px: number } {
   const px = Math.round(((style?.fontSize ?? DEFAULT_FONT_PT) * 4) / 3);
   const family = style?.fontFamily ? `"${style.fontFamily}", ${FONT_FAMILY}` : FONT_FAMILY;
   return { font: `${style?.italic ? 'italic ' : ''}${style?.bold ? '600' : '400'} ${px}px ${family}`, px };
@@ -167,12 +169,13 @@ export class Renderer {
     const st = ctrl.s;
     for (const h of overlay.refHighlights ?? []) {
       const b = rectOf(h.range);
-      ctx.strokeStyle = h.color;
+      const color = t.refs[h.index % t.refs.length];
+      ctx.strokeStyle = color;
       ctx.lineWidth = 2;
       ctx.setLineDash([]);
       ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
       ctx.globalAlpha = 0.08;
-      ctx.fillStyle = h.color;
+      ctx.fillStyle = color;
       ctx.fillRect(b.x, b.y, b.w, b.h);
       ctx.globalAlpha = 1;
     }
@@ -690,7 +693,7 @@ export function defaultAlign(v: Scalar): 'left' | 'center' | 'right' {
   return 'left';
 }
 
-function wrapLines(text: string, width: number, measure: (s: string) => number): string[] {
+export function wrapLines(text: string, width: number, measure: (s: string) => number): string[] {
   const out: string[] = [];
   for (const para of text.split('\n')) {
     const words = para.split(/(\s+)/);

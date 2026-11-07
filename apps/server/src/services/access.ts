@@ -48,11 +48,17 @@ const LINK_ROLE: Record<string, Role> = { restricted: 'none', view: 'viewer', co
 const permCache = new TtlCache<string | null>(15_000);
 onInvalidate('workbook', (id) => permCache.deleteWhere((k) => id === '*' || k.startsWith(`${id}|`)));
 
-export async function roleFor(userId: string, workbookId: string): Promise<{ role: Role; workbook: NonNullable<Awaited<ReturnType<typeof prisma.workbook.findUnique>>> }> {
+export async function roleFor(userId: string | null, workbookId: string): Promise<{ role: Role; workbook: NonNullable<Awaited<ReturnType<typeof prisma.workbook.findUnique>>> }> {
   const wb = await prisma.workbook.findUnique({ where: { id: workbookId } });
   if (!wb) throw notFound('Workbook tidak ditemukan');
-  if (wb.ownerId === userId) return { role: 'owner', workbook: wb };
+  if (userId && wb.ownerId === userId) return { role: 'owner', workbook: wb };
   if (wb.isTrashed) return { role: 'none', workbook: wb };
+  if (!userId) {
+    // Guests (no account) can only read, and only when the admin allows it.
+    if (wb.linkAccess === 'restricted') return { role: 'none', workbook: wb };
+    const settings = await getSettings();
+    return { role: settings.linkSharingEnabled && settings.guestLinkEnabled ? 'viewer' : 'none', workbook: wb };
+  }
   let role: Role = 'none';
   const key = `${workbookId}|${userId}`;
   let permission = permCache.get(key);
@@ -70,7 +76,7 @@ export async function roleFor(userId: string, workbookId: string): Promise<{ rol
   return { role, workbook: wb };
 }
 
-export async function requireCapability(userId: string, workbookId: string, cap: Capability) {
+export async function requireCapability(userId: string | null, workbookId: string, cap: Capability) {
   const r = await roleFor(userId, workbookId);
   if (r.role === 'none') throw notFound('Workbook tidak ditemukan atau Anda tidak memiliki akses');
   if (!can(r.role, cap)) throw forbidden('Izin Anda pada workbook ini tidak mencukupi');

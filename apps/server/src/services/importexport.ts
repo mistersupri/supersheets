@@ -20,6 +20,7 @@ import { prisma } from '../db';
 import { badRequest } from '../lib/http';
 import { loadSheetCells, writeSnapshot } from './cells';
 import { loadEngine } from './imports';
+import { buildOds } from './ods';
 import { styleIdFor } from './styles';
 
 export const MAX_IMPORT_CELLS = 500_000;
@@ -445,4 +446,9 @@ export async function exportPdf(workbookId: string, title: string, sheetId?: str
   });
   doc.end();
   return done;
+}
+
+export async function exportOds(workbookId: string, userId?: string): Promise<Buffer> {
+  const { sheets, engine } = await loadForExport(workbookId, undefined, userId);
+  return buildOds(sheets, engine);
 }

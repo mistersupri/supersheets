@@ -50,7 +50,8 @@ export function App() {
             <Route path="/reset-password" element={<ResetPage />} />
             <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
             <Route path="/folders/:folderId" element={<RequireAuth><Dashboard /></RequireAuth>} />
-            <Route path="/w/:id" element={<RequireAuth><EditorPage /></RequireAuth>} />
+            {/* Signed-out visitors may open shared links when the admin allows guests. */}
+            <Route path="/w/:id" element={<EditorPage />} />
             <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
             <Route path="/admin" element={<RequireAuth admin><AdminPage /></RequireAuth>} />
             <Route path="*" element={<NotFound />} />

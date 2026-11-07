@@ -4,11 +4,13 @@ import { z } from 'zod';
 import { config } from '../config';
 import { prisma } from '../db';
 import { audit } from '../lib/audit';
-import { badRequest, h, parse } from '../lib/http';
+import { badRequest, h, parse, unauthorized } from '../lib/http';
 import { broadcast } from '../realtime';
 import { requireCapability } from '../services/access';
-import { exportDelimited, exportPdf, exportXlsx, parseDelimited, parseXlsx, writeImported } from '../services/importexport';
+import { exportDelimited, exportOds, exportPdf, exportXlsx, parseDelimited, parseXlsx, writeImported } from '../services/importexport';
+import { parseOds } from '../services/ods';
 import { importRange } from '../services/imports';
+import { storage } from '../services/storage';
 import { sheetPayload } from '../services/workbooks';
 
 // Uploads stay in memory and are parsed, never written to disk or executed.
@@ -49,8 +51,22 @@ async function finish(req: Parameters<Parameters<typeof h>[0]>[0], sheets: Await
     workbookId = wb.id;
     await writeImported(workbookId, userId, sheets, 0, true);
   }
+  let storageKey: string | null = null;
+  try {
+    storageKey = storage ? await storage.put(req.file!.buffer) : null;
+  } catch (e) {
+    // The import itself succeeded; keeping the original is best effort.
+    console.error('storing upload failed', e);
+  }
   await prisma.fileAttachment.create({
-    data: { userId, workbookId, filename: req.file!.originalname.slice(0, 255), mimeType: (req.file!.mimetype || 'application/octet-stream').slice(0, 120), size: req.file!.size },
+    data: {
+      userId,
+      workbookId,
+      filename: req.file!.originalname.slice(0, 255),
+      mimeType: (req.file!.mimetype || 'application/octet-stream').slice(0, 120),
+      size: req.file!.size,
+      storageKey,
+    },
   });
   await audit(req, `import.${kind}`, { type: 'workbook', id: workbookId }, { file: req.file!.originalname, sheets: sheets.length });
   return workbookId;
@@ -65,6 +81,19 @@ importRouter.post(
     if (!/\.xlsx$/i.test(f.originalname) || !isZip(f.buffer)) throw badRequest('Berkas harus berformat .xlsx');
     const sheets = await parseXlsx(f.buffer);
     const id = await finish(req, sheets, baseName(f.originalname), 'xlsx');
+    res.status(201).json({ id });
+  }),
+);
+
+importRouter.post(
+  '/ods',
+  upload.single('file'),
+  h(async (req, res) => {
+    const f = req.file;
+    if (!f) throw badRequest('Pilih berkas .ods');
+    if (!/\.ods$/i.test(f.originalname) || !isZip(f.buffer)) throw badRequest('Berkas harus berformat .ods');
+    const sheets = await parseOds(f.buffer);
+    const id = await finish(req, sheets, baseName(f.originalname), 'ods');
     res.status(201).json({ id });
   }),
 );
@@ -102,10 +131,21 @@ exportRouter.get(
 );
 
 exportRouter.get(
+  '/:id/export/ods',
+  h(async (req, res) => {
+    const { workbook } = await requireCapability(req.user?.id ?? null, req.params.id as string, 'view');
+    const buf = await exportOds(workbook.id, req.user?.id);
+    res.setHeader('Content-Type', 'application/vnd.oasis.opendocument.spreadsheet');
+    res.setHeader('Content-Disposition', filename(workbook.title, 'ods'));
+    res.send(buf);
+  }),
+);
+
+exportRouter.get(
   '/:id/export/xlsx',
   h(async (req, res) => {
-    const { workbook } = await requireCapability(req.user!.id, req.params.id as string, 'view');
-    const buf = await exportXlsx(workbook.id, req.user!.id);
+    const { workbook } = await requireCapability(req.user?.id ?? null, req.params.id as string, 'view');
+    const buf = await exportXlsx(workbook.id, req.user?.id);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', filename(workbook.title, 'xlsx'));
     res.send(buf);
@@ -120,8 +160,8 @@ for (const [ext, delim, mime] of [
     `/:id/export/${ext}`,
     h(async (req, res) => {
       const q = parse(exportQuery, req.query);
-      const { workbook } = await requireCapability(req.user!.id, req.params.id as string, 'view');
-      const out = await exportDelimited(workbook.id, q.sheetId, delim, req.user!.id);
+      const { workbook } = await requireCapability(req.user?.id ?? null, req.params.id as string, 'view');
+      const out = await exportDelimited(workbook.id, q.sheetId, delim, req.user?.id);
       res.setHeader('Content-Type', `${mime}; charset=utf-8`);
       res.setHeader('Content-Disposition', filename(`${workbook.title} - ${out.title}`, ext));
       res.send(out.text);
@@ -133,10 +173,40 @@ exportRouter.get(
   '/:id/export/pdf',
   h(async (req, res) => {
     const q = parse(exportQuery, req.query);
-    const { workbook } = await requireCapability(req.user!.id, req.params.id as string, 'view');
-    const buf = await exportPdf(workbook.id, workbook.title, q.sheetId, req.user!.id);
+    const { workbook } = await requireCapability(req.user?.id ?? null, req.params.id as string, 'view');
+    const buf = await exportPdf(workbook.id, workbook.title, q.sheetId, req.user?.id);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', filename(workbook.title, 'pdf'));
     res.send(buf);
+  }),
+);
+
+/** Original files imported into a workbook, for anyone who can view it. */
+exportRouter.get(
+  '/:id/files',
+  h(async (req, res) => {
+    await requireCapability(req.user!.id, req.params.id as string, 'view');
+    const files = await prisma.fileAttachment.findMany({
+      where: { workbookId: req.params.id as string, storageKey: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, filename: true, size: true, createdAt: true },
+    });
+    res.json({ files });
+  }),
+);
+
+exportRouter.get(
+  '/:id/files/:fileId',
+  h(async (req, res) => {
+    await requireCapability(req.user!.id, req.params.id as string, 'view');
+    const f = await prisma.fileAttachment.findFirst({ where: { id: req.params.fileId as string, workbookId: req.params.id as string } });
+    if (!f?.storageKey || !storage) throw badRequest('Berkas asli tidak tersimpan');
+    const data = await storage.get(f.storageKey);
+    // Always a download with a neutral type, never rendered by the browser.
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const ext = (/\.([a-z]{2,4})$/i.exec(f.filename)?.[1] ?? 'bin').toLowerCase();
+    res.setHeader('Content-Disposition', filename(f.filename.replace(/\.[^.]+$/, ''), ext));
+    res.send(data);
   }),
 );

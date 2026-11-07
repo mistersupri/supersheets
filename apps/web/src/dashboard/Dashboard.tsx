@@ -669,8 +669,8 @@ function ImportButton({ folderId }: { folderId?: string }) {
   const [busy, setBusy] = useState(false);
   const nav = useNavigate();
   async function onFile(f: File) {
-    const kind = /\.xlsx$/i.test(f.name) ? 'xlsx' : /\.(csv|tsv|txt)$/i.test(f.name) ? 'csv' : null;
-    if (!kind) return toast.error('Format yang didukung: .xlsx, .csv, .tsv');
+    const kind = /\.xlsx$/i.test(f.name) ? 'xlsx' : /\.ods$/i.test(f.name) ? 'ods' : /\.(csv|tsv|txt)$/i.test(f.name) ? 'csv' : null;
+    if (!kind) return toast.error('Format yang didukung: .xlsx, .ods, .csv, .tsv');
     const fd = new FormData();
     fd.append('file', f);
     if (folderId) fd.append('folderId', folderId);
@@ -691,7 +691,7 @@ function ImportButton({ folderId }: { folderId?: string }) {
       <input
         ref={input}
         type="file"
-        accept=".xlsx,.csv,.tsv,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        accept=".xlsx,.ods,.csv,.tsv,application/vnd.oasis.opendocument.spreadsheet,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         className="sr-only"
         tabIndex={-1}
         aria-hidden="true"

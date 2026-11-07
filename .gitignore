@@ -7,3 +7,6 @@ apps/server/uploads
 apps/server/src/generated
 test-results
 playwright-report
+apps/server/data
+apps/server/.test-uploads
+packages/engine/bench/.out.mjs

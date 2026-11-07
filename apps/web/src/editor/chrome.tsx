@@ -71,9 +71,9 @@ export function TopBar() {
         ) : (
           <h1 className="truncate px-1.5 text-[15px] font-medium text-ink">{wb.title}</h1>
         )}
-        <IconButton className="max-sm:hidden" label={wb.starred ? 'Hapus bintang' : 'Beri bintang'} onClick={() => ctrl.toggleStar().catch((e) => toast.error(errorMessage(e)))}>
+        {!ctrl.guest && <IconButton className="max-sm:hidden" label={wb.starred ? 'Hapus bintang' : 'Beri bintang'} onClick={() => ctrl.toggleStar().catch((e) => toast.error(errorMessage(e)))}>
           <Icon.Star filled={wb.starred} className={wb.starred ? 'text-accent' : undefined} />
-        </IconButton>
+        </IconButton>}
         <SaveStatus />
       </div>
       {!can.edit && <span className="hidden rounded border border-line px-2 py-0.5 text-xs text-ink-2 sm:inline">{roleLabel(role)}</span>}
@@ -94,7 +94,7 @@ export function TopBar() {
       <IconButton className="max-md:hidden" label="Riwayat versi" active={panel === 'history'} onClick={() => ctrl.set({ panel: panel === 'history' ? null : 'history' })}>
         <Icon.History />
       </IconButton>
-      <button
+      {!ctrl.guest && <button
         type="button"
         className="press inline-flex h-9 items-center gap-2 rounded-md bg-brand px-3 text-sm font-medium text-brand-ink hover:bg-brand-hover max-md:size-11 max-md:justify-center max-md:px-0"
         onClick={() => ctrl.set({ dialog: 'share' })}
@@ -102,8 +102,17 @@ export function TopBar() {
       >
         <Icon.Share />
         <span className="max-md:hidden">Bagikan</span>
-      </button>
-      <UserMenu />
+      </button>}
+      {ctrl.guest ? (
+        <Link
+          to={`/login?next=${encodeURIComponent(window.location.pathname)}`}
+          className="press inline-flex h-9 items-center rounded-md border border-line-2 px-3 text-sm font-medium hover:bg-surface-2 max-md:h-11"
+        >
+          Masuk
+        </Link>
+      ) : (
+        <UserMenu />
+      )}
     </header>
   );
 }
@@ -182,7 +191,7 @@ function Check({ on, children, onClick, disabled }: { on: boolean; children: Rea
 export function useWorkbookActions() {
   const ctrl = useCtrl();
   const nav = useNavigate();
-  const download = (kind: 'xlsx' | 'csv' | 'tsv' | 'pdf') => {
+  const download = (kind: 'xlsx' | 'ods' | 'csv' | 'tsv' | 'pdf') => {
     const sid = ctrl.s.activeSheetId;
     const q = kind === 'csv' || kind === 'tsv' ? `?sheetId=${sid}` : '';
     // Flush first so the download includes the latest edits.
@@ -270,10 +279,12 @@ export function MenuBar() {
           </M>
           <SubMenu label="Unduh">
             <M onClick={() => actions.download('xlsx')}>Microsoft Excel (.xlsx)</M>
+            <M onClick={() => actions.download('ods')}>OpenDocument (.ods)</M>
             <M onClick={() => actions.download('csv')}>CSV, sheet aktif (.csv)</M>
             <M onClick={() => actions.download('tsv')}>TSV, sheet aktif (.tsv)</M>
             <M onClick={() => actions.download('pdf')}>PDF (.pdf)</M>
           </SubMenu>
+          {!ctrl.guest && <M onClick={() => ctrl.set({ dialog: 'files' })}>Berkas asli impor</M>}
           <MenuSeparator />
           <M onClick={() => ctrl.set({ dialog: 'share' })}>Bagikan</M>
           <M onClick={() => ctrl.set({ panel: 'history' })}>Riwayat versi</M>

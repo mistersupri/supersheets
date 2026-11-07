@@ -7,6 +7,9 @@ import { collectFunctions, Node, parseFormula } from './parser';
 import { err, FormulaError, isError, Scalar } from './values';
 
 interface CellRec {
+  /** Recalculation state, kept on the record so hot lookups avoid building string keys. */
+  pending?: boolean;
+  visiting?: boolean;
   raw: string;
   ast: Node | null; // formula AST, null for constants
   parseError: boolean;
@@ -405,6 +408,16 @@ export class Engine {
     }
   }
 
+  /** Cheap pre-check: could any formula read this cell? */
+  private mayHaveDependents(g: string): boolean {
+    if (this.dependents.get(g)?.size) return true;
+    const bar = g.lastIndexOf('|');
+    const sheetId = g.slice(0, bar);
+    if (this.wideRanges.get(sheetId)?.size) return true;
+    const col = Number(g.slice(g.lastIndexOf(':') + 1));
+    return !!this.rangeIndex.get(sheetId)?.get(col)?.size;
+  }
+
   private collectDirty(start: string[]): Set<string> {
     const dirty = new Set<string>();
     const queue: string[] = [];
@@ -435,6 +448,12 @@ export class Engine {
       before.set(g, this.sheets.get(sheetId)?.cells.get(`${row}:${col}`)?.value ?? null);
     }
     const pending = new Set(dirty);
+    const markPending = (g: string) => {
+      const { sheetId, row, col } = splitGk(g);
+      const rec = this.sheets.get(sheetId)?.cells.get(`${row}:${col}`);
+      if (rec) rec.pending = true;
+    };
+    pending.forEach(markPending);
     const visiting = new Set<string>();
     const stack: string[] = [];
     const cycle = new Set<string>();
@@ -444,27 +463,42 @@ export class Engine {
       const { sheetId, row, col } = splitGk(g);
       const rec = this.sheets.get(sheetId)?.cells.get(`${row}:${col}`);
       pending.delete(g);
+      if (rec) rec.pending = false;
       if (!rec || !rec.ast) return;
       visiting.add(g);
+      rec.visiting = true;
       stack.push(g);
       const ctx: EvalContext = {
         sheetId,
         row,
         col,
         getValue: (sid, r, c) => {
-          const key = gk(sid, r, c);
-          if (visiting.has(key)) {
-            const idx = stack.indexOf(key);
-            for (let i = idx; i < stack.length; i++) cycle.add(stack[i]);
-            return err.cycle('Referensi melingkar');
+          const sheet = this.sheets.get(sid);
+          if (!sheet) return null;
+          const k = `${r}:${c}`;
+          const cell = sheet.cells.get(k);
+          if (cell) {
+            // Only formula cells can be pending or part of a cycle: constants skip the checks.
+            if (!cell.ast || (!cell.pending && !cell.visiting)) return cell.value;
+            const key = `${sid}|${k}`;
+            if (cell.visiting) {
+              const idx = stack.indexOf(key);
+              for (let i = idx; i < stack.length; i++) cycle.add(stack[i]);
+              return err.cycle('Referensi melingkar');
+            }
+            compute(key);
+            return cell.value;
           }
-          if (pending.has(key)) compute(key);
-          else {
-            // A value spilled by an array formula that has not been recalculated yet.
-            const sv = this.spillVals.get(sid)?.get(`${r}:${c}`);
-            if (sv && pending.has(sv.anchor)) compute(sv.anchor);
+          const spilled = this.spillVals.get(sid);
+          if (!spilled) return null;
+          const sv = spilled.get(k);
+          if (!sv) return null;
+          // A value spilled by an array formula that has not been recalculated yet.
+          if (pending.has(sv.anchor)) {
+            compute(sv.anchor);
+            return this.getValue(sid, r, c);
           }
-          return this.getValue(sid, r, c);
+          return sv.v;
         },
         resolveSheet: (name) => this.resolveSheet(name),
         usedSize: (sid) => this.usedSize(sid),
@@ -491,6 +525,7 @@ export class Engine {
       rec.value = result;
       stack.pop();
       visiting.delete(g);
+      rec.visiting = false;
     };
 
     // Evaluate in sheet order so typical top-down chains recurse shallowly.
@@ -506,7 +541,10 @@ export class Engine {
       const changedCells = [...this.spillChanged];
       this.spillChanged.clear();
       changedCells.forEach((c) => spillTouched.add(c));
-      const more = this.collectDirty(changedCells);
+      // Most spilled cells have no readers: skip them before the (costlier) graph walk.
+      const readable = changedCells.filter((k) => this.mayHaveDependents(k));
+      if (!readable.length) continue;
+      const more = this.collectDirty(readable);
       for (const g of more) {
         if (!dirty.has(g)) {
           dirty.add(g);
@@ -514,6 +552,7 @@ export class Engine {
           before.set(g, this.sheets.get(sheetId)?.cells.get(`${row}:${col}`)?.value ?? null);
         }
         pending.add(g);
+        markPending(g);
       }
       const next = [...more].sort((a, b) => {
         const x = splitGk(a);

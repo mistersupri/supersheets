@@ -22,9 +22,12 @@ export abstract class Grid {
   abstract readonly rows: number;
   abstract readonly cols: number;
   abstract get(r: number, c: number): Scalar;
-  /** Row-major iteration over every value. */
-  *values(): Generator<Scalar> {
-    for (let r = 0; r < this.rows; r++) for (let c = 0; c < this.cols; c++) yield this.get(r, c);
+  /** Every value, row by row (an array: much faster to loop over than a generator). */
+  values(): Scalar[] {
+    const out: Scalar[] = new Array(this.rows * this.cols);
+    let i = 0;
+    for (let r = 0; r < this.rows; r++) for (let c = 0; c < this.cols; c++) out[i++] = this.get(r, c);
+    return out;
   }
   toArray(): Scalar[][] {
     const out: Scalar[][] = [];
@@ -89,18 +92,40 @@ export function lift(args: Arg[], fn: (...v: Scalar[]) => Scalar): Arg {
     }
   }
   if (rows * cols > MAX_ARRAY_CELLS) return err.num('Hasil array terlalu besar');
-  const pick = (a: Arg, r: number, c: number): Scalar => {
-    if (!(a instanceof Grid)) return a;
-    const rr = a.rows === 1 ? 0 : r;
-    const cc = a.cols === 1 ? 0 : c;
-    if (rr >= a.rows || cc >= a.cols) return err.na();
-    return a.get(rr, cc);
-  };
-  const out: Scalar[][] = [];
-  for (let r = 0; r < rows; r++) {
-    const row: Scalar[] = [];
-    for (let c = 0; c < cols; c++) row.push(fn(...args.map((a) => pick(a, r, c))));
-    out.push(row);
+  // Resolve each argument to a fast accessor once, not per element.
+  const getters = args.map((a): ((r: number, c: number) => Scalar) => {
+    if (!(a instanceof Grid)) return () => a;
+    const data = a.toArray();
+    const rowsA = a.rows;
+    const colsA = a.cols;
+    return (r, c) => {
+      const rr = rowsA === 1 ? 0 : r;
+      const cc = colsA === 1 ? 0 : c;
+      if (rr >= rowsA || cc >= colsA) return err.na();
+      return data[rr][cc];
+    };
+  });
+  const out: Scalar[][] = new Array(rows);
+  if (getters.length === 1) {
+    const g0 = getters[0];
+    for (let r = 0; r < rows; r++) {
+      const row: Scalar[] = new Array(cols);
+      for (let c = 0; c < cols; c++) row[c] = fn(g0(r, c));
+      out[r] = row;
+    }
+  } else if (getters.length === 2) {
+    const [g0, g1] = getters;
+    for (let r = 0; r < rows; r++) {
+      const row: Scalar[] = new Array(cols);
+      for (let c = 0; c < cols; c++) row[c] = fn(g0(r, c), g1(r, c));
+      out[r] = row;
+    }
+  } else {
+    for (let r = 0; r < rows; r++) {
+      const row: Scalar[] = new Array(cols);
+      for (let c = 0; c < cols; c++) row[c] = fn(...getters.map((g) => g(r, c)));
+      out[r] = row;
+    }
   }
   return new ArrayValue(out);
 }

@@ -23,6 +23,17 @@ export const config = {
   webDist: process.env.WEB_DIST ?? '',
   /** Set behind a reverse proxy so req.ip and secure cookies work. */
   trustProxy: process.env.TRUST_PROXY === '1',
+  /** Where original uploads are kept: "local" (STORAGE_DIR) or "s3". "none" keeps nothing. */
+  storage: (process.env.STORAGE ?? 'local') as 'local' | 's3' | 'none',
+  storageDir: process.env.STORAGE_DIR ?? './data/uploads',
+  s3: {
+    endpoint: process.env.S3_ENDPOINT || undefined,
+    region: process.env.S3_REGION ?? 'us-east-1',
+    bucket: process.env.S3_BUCKET ?? '',
+    accessKeyId: process.env.S3_ACCESS_KEY_ID ?? '',
+    secretAccessKey: process.env.S3_SECRET_ACCESS_KEY ?? '',
+    forcePathStyle: process.env.S3_FORCE_PATH_STYLE !== '0',
+  },
   /** Optional Redis: shares realtime rooms, cache invalidation and rate limits across processes. */
   redisUrl: process.env.REDIS_URL ?? '',
   /** Number of worker processes (cluster mode). More than 1 requires REDIS_URL. */

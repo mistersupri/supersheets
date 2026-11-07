@@ -60,7 +60,7 @@ export default function AdminPage() {
   const [q, setQ] = useState('');
   const [creating, setCreating] = useState(false);
   const users = useQuery({ queryKey: ['admin-users', q], queryFn: () => api.get<{ users: AdminUser[] }>(`/api/admin/users${q ? `?q=${encodeURIComponent(q)}` : ''}`) });
-  const settings = useQuery({ queryKey: ['admin-settings'], queryFn: () => api.get<{ settings: { registrationEnabled: boolean; linkSharingEnabled: boolean } }>('/api/admin/settings') });
+  const settings = useQuery({ queryKey: ['admin-settings'], queryFn: () => api.get<{ settings: { registrationEnabled: boolean; linkSharingEnabled: boolean; guestLinkEnabled: boolean } }>('/api/admin/settings') });
   const logs = useQuery({ queryKey: ['admin-logs'], queryFn: () => api.get<{ logs: Log[] }>('/api/admin/audit-logs') });
 
   const patchUser = async (id: string, body: Record<string, unknown>) => {
@@ -98,6 +98,11 @@ export default function AdminPage() {
           <div className="flex flex-col gap-1">
             <Checkbox label="Izinkan pendaftaran akun baru" checked={settings.data!.settings.registrationEnabled} onChange={(v) => patchSettings({ registrationEnabled: v })} />
             <Checkbox label="Izinkan berbagi lewat tautan" checked={settings.data!.settings.linkSharingEnabled} onChange={(v) => patchSettings({ linkSharingEnabled: v })} />
+            <Checkbox
+              label="Izinkan tamu tanpa akun membuka tautan (hanya baca)"
+              checked={settings.data!.settings.guestLinkEnabled}
+              onChange={(v) => patchSettings({ guestLinkEnabled: v })}
+            />
           </div>
         )}
       </Section>

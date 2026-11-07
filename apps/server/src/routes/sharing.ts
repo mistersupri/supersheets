@@ -33,6 +33,7 @@ sharingRouter.get(
       owner,
       linkAccess: workbook.linkAccess,
       linkSharingEnabled: settings.linkSharingEnabled,
+      guestLinkEnabled: settings.guestLinkEnabled,
       permissions: permissions.map((p) => ({ id: p.id, permission: p.permission, user: p.user })),
       invitations: invitations.map((i) => ({ id: i.id, email: i.email, permission: i.permission, createdAt: i.createdAt })),
     });

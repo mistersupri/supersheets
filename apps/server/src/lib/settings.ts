@@ -4,9 +4,11 @@ import { invalidate, onInvalidate } from './bus';
 export interface SystemSettings {
   registrationEnabled: boolean;
   linkSharingEnabled: boolean;
+  /** Visitors without an account may open shared links, read-only. */
+  guestLinkEnabled: boolean;
 }
 
-const DEFAULTS: SystemSettings = { registrationEnabled: true, linkSharingEnabled: true };
+const DEFAULTS: SystemSettings = { registrationEnabled: true, linkSharingEnabled: true, guestLinkEnabled: false };
 
 let cached: { v: SystemSettings; exp: number } | null = null;
 onInvalidate('settings', () => {

@@ -74,7 +74,6 @@ async function runBatch(userId: string, workbookId: string, body: z.infer<typeof
   });
   if (result.ops.length) {
     broadcast(workbookId, 'cell:batch-update', { revision: result.revision, ops: result.ops, userId, clientId: body.clientId }, socketId);
-    broadcast(workbookId, 'revision:created', { revision: result.revision, userId });
   }
   return result;
 }
@@ -83,7 +82,7 @@ worksheetsRouter.get(
   '/:id/range',
   h(async (req, res) => {
     const id = req.params.id as string;
-    await requireCapability(req.user!.id, await worksheetWorkbook(id), 'view');
+    await requireCapability(req.user?.id ?? null, await worksheetWorkbook(id), 'view');
     const range = typeof req.query.range === 'string' ? parseRangeA1(req.query.range) : null;
     if (typeof req.query.range === 'string' && !range) throw badRequest('Rentang tidak valid');
     res.json(jsonSafe({ cells: await loadSheetCells(id, range ?? undefined) }));
@@ -135,7 +134,6 @@ worksheetsRouter.post(
     const result = await applyStructure({ workbookId, sheetId: id, userId: req.user!.id, role, clientId: body.clientId, op: { axis: body.axis, index: body.index, count: body.count } });
     const sheet = await sheetPayload(id);
     broadcast(workbookId, 'worksheet:structure', { sheet, revision: result.revision, clientId: body.clientId, op: { axis: body.axis, index: body.index, count: body.count } }, req.get('x-socket-id'));
-    broadcast(workbookId, 'revision:created', { revision: result.revision, userId: req.user!.id });
     res.json({ ...result, sheet });
   }),
 );
