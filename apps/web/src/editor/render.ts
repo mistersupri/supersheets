@@ -217,6 +217,16 @@ export class Renderer {
         ctx.strokeRect(sb.x + sb.w - 4.5, sb.y + sb.h - 4.5, 8, 8);
       }
     }
+    // Outline the result area of an array formula when the cursor is inside it.
+    const spill = ctrl.model.engine.spillAreaAt(sheet.id, a.row, a.col);
+    if (spill) {
+      const b = rectOf(spill);
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = spill.ok ? t.brand : t.danger;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+      ctx.setLineDash([]);
+    }
     if (overlay.fillPreview) {
       const b = rectOf(overlay.fillPreview);
       ctx.setLineDash([4, 3]);
@@ -300,8 +310,9 @@ export class Renderer {
         if (inMerge(r, c)) continue;
         const raw = model.raw(sid, r, c);
         let style = model.style(sid, r, c);
-        if (!raw && !style) continue;
+        // Cells filled by an array formula have a value but no input of their own.
         const v = model.value(sid, r, c);
+        if (!raw && !style && v === null) continue;
         const text = st.showFormulas && raw.startsWith('=') ? raw : displayText(v, style);
         const cf = this.conditional(sid, r, c, v, text);
         if (cf) style = { ...(style ?? {}), ...cf };
@@ -367,7 +378,7 @@ export class Renderer {
         let c = i.c;
         while (clipW < need && c < lastCol) {
           const next = cols[cols.indexOf(c) + 1];
-          if (next === undefined || model.raw(sid, i.r, next) !== '' || inMerge(i.r, next)) break;
+          if (next === undefined || model.raw(sid, i.r, next) !== '' || model.value(sid, i.r, next) !== null || inMerge(i.r, next)) break;
           clipW += colW(next);
           c = next;
         }

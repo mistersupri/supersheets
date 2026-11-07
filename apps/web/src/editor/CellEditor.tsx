@@ -1,4 +1,6 @@
+import clsx from 'clsx';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { highlightFormula } from './FormulaHighlight';
 import { useCtrl, useEditor } from './context';
 import { applySuggestion, AssistPanel, useFormulaAssist } from './formulaAssist';
 
@@ -9,6 +11,7 @@ export function CellEditor({ rect, viewport, onDone }: { rect: { x: number; y: n
   const ref = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(editing.value.length);
   const [active, setActive] = useState(0);
+  const [scroll, setScroll] = useState({ x: 0, y: 0 });
   const assist = useFormulaAssist(editing.value, caret);
   const style = ctrl.model.style(editing.sheetId, editing.row, editing.col);
   const px = Math.round(((style?.fontSize ?? 10) * 4) / 3);
@@ -100,14 +103,28 @@ export function CellEditor({ rect, viewport, onDone }: { rect: { x: number; y: n
 
   return (
     <div className="pointer-events-none absolute top-0 left-0" style={{ transform: `translate(${rect.x}px, ${rect.y}px)` }}>
+      {editing.value.startsWith('=') && <div aria-hidden="true" className="absolute top-0 left-0 bg-surface" style={{ width: box.w, height: box.h }} />}
+      {editing.value.startsWith('=') && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute top-0 left-0 overflow-hidden border-2 border-transparent px-[3px] py-[2px] leading-tight text-ink"
+          style={{ width: box.w, height: box.h, fontSize: px, fontFamily: 'var(--font-mono)', whiteSpace: style?.wrap ? 'pre-wrap' : 'pre' }}
+        >
+          <div style={{ transform: `translate(${-scroll.x}px, ${-scroll.y}px)` }}>{highlightFormula(editing.value)}</div>
+        </div>
+      )}
       <textarea
         ref={ref}
+        onScroll={(e) => setScroll({ x: e.currentTarget.scrollLeft, y: e.currentTarget.scrollTop })}
         data-active-editor={editing.source === 'cell' ? 'true' : undefined}
         aria-label="Isi sel"
         aria-autocomplete="list"
         aria-controls={assist.suggestions.length ? 'cell-assist' : undefined}
         aria-activedescendant={assist.suggestions.length ? `cell-assist-${active}` : undefined}
-        className="pointer-events-auto block resize-none overflow-hidden border-2 border-brand bg-surface px-[3px] py-[2px] leading-tight text-ink outline-none"
+        className={clsx(
+          'pointer-events-auto relative block resize-none overflow-hidden border-2 border-brand px-[3px] py-[2px] leading-tight outline-none',
+          editing.value.startsWith('=') ? 'bg-transparent text-transparent caret-[var(--ink)]' : 'bg-surface text-ink',
+        )}
         style={{
           minWidth: rect.w,
           minHeight: rect.h,

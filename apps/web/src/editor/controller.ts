@@ -1,6 +1,11 @@
 import {
   adjustFormulaForStructure,
   CellOp,
+  shiftA1,
+  shiftFrozen,
+  shiftIndex,
+  shiftMetadata,
+  type StructureOp,
   CellStyle,
   colToLetters,
   compareValues,
@@ -8,6 +13,8 @@ import {
   formatA1,
   formatRangeA1,
   formatValue,
+  FormulaError,
+  fromStored,
   isError,
   Merge,
   moveRefsInFormula,
@@ -208,6 +215,7 @@ export class EditorController {
       const meta = await api.get<{ workbook: WorkbookInfo; role: Role; can: Caps; sheets: SheetPayload[] }>(`/api/workbooks/${this.workbookId}`);
       const cells = await api.get<{ revision: number; sheets: Record<string, never[]>; users: { id: string; name: string }[] }>(`/api/workbooks/${this.workbookId}/cells`);
       this.model.load(meta.sheets, cells.sheets);
+      this.installImportProvider();
       const users: Record<string, string> = { [user.id]: user.name };
       for (const u of cells.users) users[u.id] = u.name;
       const hash = new URLSearchParams(window.location.hash.slice(1));
@@ -237,7 +245,42 @@ export class EditorController {
     }
   }
 
+  private importCache = new Map<string, { state: 'pending' | 'ok' | 'error'; data?: Scalar[][]; error?: FormulaError }>();
+  private importTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** IMPORTRANGE asks the server, then recalculates when the data arrives (and every 2 minutes). */
+  private installImportProvider() {
+    const engine = this.model.engine;
+    engine.setImportProvider((source, range) => {
+      const key = `${source}\u0000${range}`;
+      const hit = this.importCache.get(key);
+      if (hit?.state === 'ok') return hit.data!;
+      if (hit?.state === 'error') return hit.error!;
+      if (!hit) {
+        this.importCache.set(key, { state: 'pending' });
+        const q = new URLSearchParams({ source, range });
+        api
+          .get<{ values: unknown[][] }>(`/api/workbooks/${this.workbookId}/import-range?${q}`)
+          .then((r) => this.importCache.set(key, { state: 'ok', data: r.values.map((row) => row.map((v) => fromStored(v as never))) }))
+          .catch((e) => this.importCache.set(key, { state: 'error', error: new FormulaError('#REF!', errorMessage(e)) }))
+          .finally(() => {
+            this.model.engine.refreshExternal();
+            this.model.notify();
+          });
+      }
+      return 'pending';
+    });
+    engine.refreshExternal();
+    this.importTimer = setInterval(() => {
+      if (!this.importCache.size) return;
+      this.importCache.clear();
+      this.model.engine.refreshExternal();
+      this.model.notify();
+    }, 120_000);
+  }
+
   dispose() {
+    if (this.importTimer) clearInterval(this.importTimer);
     this.sync?.dispose();
     for (const t of this.metaTimers.values()) clearTimeout(t);
   }
@@ -602,6 +645,14 @@ export class EditorController {
   undo() {
     const e = this.undoStack.pop();
     if (!e) return;
+    if (e.structure) {
+      void this.undoStructure(e.structure).then((ok) => {
+        if (ok) this.redoStack.push(e);
+        else this.undoStack.push(e);
+        this.updateUndoFlags();
+      });
+      return;
+    }
     if (!this.canEditCells(e.cells)) {
       this.undoStack.push(e);
       return;
@@ -614,6 +665,16 @@ export class EditorController {
   redo() {
     const e = this.redoStack.pop();
     if (!e) return;
+    if (e.structure) {
+      const { sheetId, op } = e.structure;
+      if (this.s.activeSheetId !== sheetId) this.setActiveSheet(sheetId);
+      void this.structural(op.axis, op.index, op.count, true).then((ok) => {
+        if (ok) this.undoStack.push(e);
+        else this.redoStack.push(e);
+        this.updateUndoFlags();
+      });
+      return;
+    }
     if (!this.canEditCells(e.cells)) {
       this.redoStack.push(e);
       return;
@@ -1029,136 +1090,119 @@ export class EditorController {
 
   // ---------- rows & columns ----------
 
-  /** Inserts (count > 0) or deletes (count < 0) rows/columns on the active sheet. */
-  structural(axis: 'row' | 'col', index: number, count: number) {
-    if (!this.s.can.edit) return void toast.message('Anda hanya dapat melihat workbook ini.');
+  /**
+   * Inserts (count > 0) or deletes (count < 0) rows/columns on the active sheet.
+   * The model updates immediately; the server applies the same shift with SQL
+   * and rewrites formulas, so the size of the sheet does not matter.
+   */
+  async structural(axis: 'row' | 'col', index: number, count: number, fromHistory = false): Promise<boolean> {
+    if (!this.s.can.edit) {
+      toast.message('Anda hanya dapat melihat workbook ini.');
+      return false;
+    }
+    if (count === 0) return false;
     const sheet = this.sheet()!;
     const sid = sheet.id;
-    const op = { sheetName: sheet.title, axis, index, count };
+    const op: StructureOp = { axis, index, count };
+    await this.sync.flushNow();
+    // Remember what a delete removes, and every formula as it was, for undo.
+    const removed: { row: number; col: number; snap: CellSnapshot }[] = [];
+    const formulas: { sheetId: string; row: number; col: number; raw: string }[] = [];
+    const inDeleted = (r: number, c: number) => count < 0 && (axis === 'row' ? r : c) >= index && (axis === 'row' ? r : c) < index - count;
+    const keys = new Set<string>(sheet.styles.keys());
+    for (const c of this.model.engine.cells(sid)) keys.add(`${c.row}:${c.col}`);
+    for (const key of keys) {
+      const [r, c] = key.split(':').map(Number);
+      if (inDeleted(r, c)) removed.push({ row: r, col: c, snap: this.model.snapshot(sid, r, c) });
+    }
+    for (const s of this.model.sheets) for (const c of this.model.engine.cells(s.id)) if (c.raw.startsWith('=')) formulas.push({ sheetId: s.id, row: c.row, col: c.col, raw: c.raw });
+
+    this.applyStructureLocal(sid, op);
+    try {
+      const r = await api.post<{ revision: number; sheet: SheetPayload }>(`/api/worksheets/${sid}/structure`, { ...op, clientId: this.sync.clientId });
+      this.sync.revision = Math.max(this.sync.revision, r.revision);
+      this.model.updateSheet(r.sheet);
+    } catch (e) {
+      toast.error(`Gagal mengubah baris/kolom: ${errorMessage(e)}`);
+      const meta = await api.get<{ sheets: SheetPayload[] }>(`/api/workbooks/${this.workbookId}`).catch(() => null);
+      meta?.sheets.forEach((sh) => this.model.updateSheet(sh));
+      await this.resync();
+      return false;
+    }
+    if (!fromHistory) {
+      const what = axis === 'row' ? 'baris' : 'kolom';
+      this.undoStack.push({
+        label: count > 0 ? `Sisipkan ${count} ${what}` : `Hapus ${-count} ${what}`,
+        cells: [],
+        sheets: [],
+        structure: { sheetId: sid, op, removed, formulas },
+      });
+      this.redoStack = [];
+      this.updateUndoFlags();
+    }
+    return true;
+  }
+
+  /** Applies a row/column shift to the local model only (the server does its own). */
+  private applyStructureLocal(sid: string, op: StructureOp) {
+    const sheet = this.model.sheet(sid)!;
     const writes: CellWrite[] = [];
-    // 1. Formulas everywhere that point at this sheet.
     const newRaw = new Map<string, string>();
     for (const s of this.model.sheets) {
       for (const c of this.model.engine.cells(s.id)) {
         if (!c.raw.startsWith('=')) continue;
-        const next = adjustFormulaForStructure(c.raw, s.title, op);
-        if (next !== c.raw) {
-          if (s.id === sid) newRaw.set(`${c.row}:${c.col}`, next);
-          else writes.push({ sheetId: s.id, row: c.row, col: c.col, raw: next });
-        }
+        const next = adjustFormulaForStructure(c.raw, s.title, { sheetName: sheet.title, ...op });
+        if (next === c.raw) continue;
+        if (s.id === sid) newRaw.set(`${c.row}:${c.col}`, next);
+        else writes.push({ sheetId: s.id, row: c.row, col: c.col, raw: next });
       }
     }
-    // 2. Move the cells of this sheet.
     const keys = new Set<string>(sheet.styles.keys());
     for (const c of this.model.engine.cells(sid)) keys.add(`${c.row}:${c.col}`);
-    const shift = (i: number): number | null => {
-      if (count > 0) return i >= index ? i + count : i;
-      const del = -count;
-      if (i < index) return i;
-      if (i >= index + del) return i - del;
-      return null;
-    };
     const target = new Map<string, CellSnapshot>();
     for (const key of keys) {
       const [r, c] = key.split(':').map(Number);
       const snap = this.model.snapshot(sid, r, c);
-      const raw = newRaw.get(key) ?? snap.raw;
-      const nr = axis === 'row' ? shift(r) : r;
-      const nc = axis === 'col' ? shift(c) : c;
+      const nr = op.axis === 'row' ? shiftIndex(r, op) : r;
+      const nc = op.axis === 'col' ? shiftIndex(c, op) : c;
       if (nr === null || nc === null) continue;
-      target.set(`${nr}:${nc}`, { raw, style: snap.style });
+      target.set(`${nr}:${nc}`, { raw: newRaw.get(key) ?? snap.raw, style: snap.style });
     }
     for (const key of new Set([...keys, ...target.keys()])) {
       const [r, c] = key.split(':').map(Number);
       const want = target.get(key) ?? { raw: '', style: null };
       writes.push({ sheetId: sid, row: r, col: c, raw: want.raw, style: want.style });
     }
-    if (writes.length > 50_000) return void toast.error('Perubahan terlalu besar untuk satu langkah. Kurangi jumlah baris/kolom.');
-    // 3. Sheet metadata.
-    const md = sheet.metadata;
-    const shiftMap = (m?: Record<number, number>) => {
-      const out: Record<number, number> = {};
-      for (const [i, v] of Object.entries(m ?? {})) {
-        const n = shift(Number(i));
-        if (n !== null) out[n] = v;
-      }
-      return out;
-    };
-    const shiftList = (l?: number[]) => (l ?? []).map(shift).filter((x): x is number => x !== null);
-    const shiftRange = <T extends RangeAddress>(m: T): T | null => {
-      const a = axis === 'row' ? 'r' : 'c';
-      const lo = m[`${a}1` as 'r1'];
-      const hi = m[`${a}2` as 'r2'];
-      let nlo: number;
-      let nhi: number;
-      if (count > 0) {
-        nlo = lo >= index ? lo + count : lo;
-        nhi = hi >= index ? hi + count : hi;
-      } else {
-        const del = -count;
-        const end = index + del - 1;
-        if (lo >= index && hi <= end) return null;
-        nlo = lo < index ? lo : lo > end ? lo - del : index;
-        nhi = hi < index ? hi : hi > end ? hi - del : index - 1;
-      }
-      return { ...m, [`${a}1`]: nlo, [`${a}2`]: nhi };
-    };
-    const metadata: Partial<SheetMetadata> = {};
-    if (axis === 'row') {
-      metadata.rowHeights = shiftMap(md.rowHeights);
-      metadata.hiddenRows = shiftList(md.hiddenRows);
-    } else {
-      metadata.colWidths = shiftMap(md.colWidths);
-      metadata.hiddenCols = shiftList(md.hiddenCols);
-    }
-    metadata.merges = (md.merges ?? []).map(shiftRange).filter((m): m is Merge => !!m && (m.r1 !== m.r2 || m.c1 !== m.c2));
-    if (md.filter) {
-      const f = shiftRange(md.filter);
-      if (f && axis === 'col') {
-        const crit: SheetFilter['criteria'] = {};
-        for (const [c, v] of Object.entries(md.filter.criteria ?? {})) {
-          const n = shift(Number(c));
-          if (n !== null) crit[n] = v;
-        }
-        f.criteria = crit;
-      }
-      metadata.filter = f;
-    }
-    const patch: SheetPatch = { metadata };
-    if (axis === 'row' && sheet.frozenRows > index) patch.frozenRows = Math.max(0, sheet.frozenRows + Math.max(count, index - sheet.frozenRows));
-    if (axis === 'col' && sheet.frozenColumns > index) patch.frozenColumns = Math.max(0, sheet.frozenColumns + Math.max(count, index - sheet.frozenColumns));
-    const what = axis === 'row' ? 'baris' : 'kolom';
-    const label = count > 0 ? `Sisipkan ${count} ${what}` : `Hapus ${-count} ${what}`;
-    if (this.write(writes, label, [{ sheetId: sid, patch }])) {
-      void this.shiftRules(sid, shiftRange);
-    }
-  }
-
-  /** Keeps validation, conditional format and protected-range addresses in step with row/column changes. */
-  private async shiftRules(sheetId: string, shiftRange: (m: RangeAddress) => RangeAddress | null) {
-    const sheet = this.model.sheet(sheetId);
-    if (!sheet) return;
+    this.model.applyCells(writes, { by: this.userId });
+    this.model.patchSheet(sid, {
+      metadata: shiftMetadata(sheet.metadata, op),
+      frozenRows: op.axis === 'row' ? shiftFrozen(sheet.frozenRows, op) : undefined,
+      frozenColumns: op.axis === 'col' ? shiftFrozen(sheet.frozenColumns, op) : undefined,
+    });
     const remap = <T extends { range: string | null }>(items: T[]) =>
       items
         .map((it) => {
-          if (it.range === null) return it;
-          const r = parseRangeA1(it.range);
-          const n = r ? shiftRange(r) : null;
-          return n ? { ...it, range: formatRangeA1(n) } : null;
+          const r = shiftA1(it.range, op);
+          return r === undefined ? null : { ...it, range: r };
         })
         .filter((x): x is T => !!x);
-    try {
-      const v = remap(sheet.validations);
-      if (JSON.stringify(v) !== JSON.stringify(sheet.validations)) await this.saveValidations(v, true);
-      const cf = remap(sheet.conditionalFormats);
-      if (JSON.stringify(cf) !== JSON.stringify(sheet.conditionalFormats)) await this.saveConditional(cf, true);
-      if (this.s.can.manage) {
-        const p = remap(sheet.protectedRanges);
-        if (JSON.stringify(p) !== JSON.stringify(sheet.protectedRanges)) await this.saveProtected(p, true);
-      }
-    } catch (e) {
-      toast.error(errorMessage(e));
-    }
+    sheet.validations = remap(sheet.validations);
+    sheet.conditionalFormats = remap(sheet.conditionalFormats);
+    sheet.protectedRanges = remap(sheet.protectedRanges);
+    this.model.notify();
+  }
+
+  /** Undo of a row/column change: the inverse shift, then the old contents and formulas. */
+  private async undoStructure(e: NonNullable<UndoEntry['structure']>) {
+    const { sheetId, op } = e;
+    if (this.s.activeSheetId !== sheetId) this.setActiveSheet(sheetId);
+    const ok = await this.structural(op.axis, op.index, -op.count, true);
+    if (!ok) return false;
+    const writes: CellWrite[] = [];
+    for (const r of e.removed) writes.push({ sheetId, row: r.row, col: r.col, raw: r.snap.raw, style: r.snap.style });
+    for (const f of e.formulas) if (this.model.raw(f.sheetId, f.row, f.col) !== f.raw) writes.push({ ...f });
+    if (writes.length) this.sync.queue(this.model.applyCells(writes, { by: this.userId }));
+    return true;
   }
 
   insertRows(where: 'above' | 'below') {

@@ -266,3 +266,97 @@ describe('dashboard', () => {
     expect(cells.body.cells[0].value).toBe(60);
   });
 });
+
+describe('array formulas and IMPORTRANGE', () => {
+  let src: string;
+  let dst: string;
+  let dstSheet: string;
+  it('reads another workbook only with access to it', async () => {
+    src = (await owner.post('/api/workbooks').set(H).send({ title: 'Sumber' })).body.id;
+    const srcSheet = (await owner.get(`/api/workbooks/${src}`)).body.sheets[0].id;
+    await owner.post(`/api/worksheets/${srcSheet}/cells/batch`).set(H).send({
+      baseRevision: 0,
+      clientId: 'client-src',
+      ops: [
+        { sheetId: srcSheet, row: 0, col: 0, raw: '1' },
+        { sheetId: srcSheet, row: 1, col: 0, raw: '2' },
+        { sheetId: srcSheet, row: 0, col: 1, raw: '=A1*10' },
+      ],
+    });
+    dst = (await owner.post('/api/workbooks').set(H).send({ title: 'Tujuan' })).body.id;
+    dstSheet = (await owner.get(`/api/workbooks/${dst}`)).body.sheets[0].id;
+    const r = await owner.get(`/api/workbooks/${dst}/import-range`).query({ source: `http://x/w/${src}`, range: 'Sheet1!A1:B2' });
+    expect(r.status).toBe(200);
+    expect(r.body.values).toEqual([
+      [1, 10],
+      [2, null],
+    ]);
+    // Editor of the destination without access to the source is refused.
+    await owner.post(`/api/workbooks/${dst}/share`).set(H).send({ email: 'budi@example.test', permission: 'editor' });
+    const denied = await editor.get(`/api/workbooks/${dst}/import-range`).query({ source: src, range: 'A1:B2' });
+    expect(denied.status).toBe(403);
+  });
+  it('exports spilled values to CSV and as an array formula to XLSX', async () => {
+    await owner.post(`/api/worksheets/${dstSheet}/cells/batch`).set(H).send({
+      baseRevision: 0,
+      clientId: 'client-dst',
+      ops: [
+        { sheetId: dstSheet, row: 0, col: 0, raw: `=IMPORTRANGE("${src}","Sheet1!A1:A2")` },
+        { sheetId: dstSheet, row: 0, col: 2, raw: '=SEQUENCE(2,1,5)' },
+      ],
+    });
+    const csv = await owner.get(`/api/workbooks/${dst}/export/csv`);
+    expect(csv.text.replace('﻿', '')).toBe('1,,5\r\n2,,6');
+    const out = await owner.get(`/api/workbooks/${dst}/export/xlsx`).buffer(true).parse((res, cb) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => cb(null, Buffer.concat(chunks)));
+    });
+    const back = new ExcelJS.Workbook();
+    await back.xlsx.load(out.body);
+    const ws = back.worksheets[0];
+    expect(ws.getCell('C1').formula).toBe('SEQUENCE(2,1,5)');
+    expect(ws.getCell('C2').value).toBe(6);
+  });
+});
+
+describe('row and column structure', () => {
+  let wb: string;
+  let sh: string;
+  let rev = 0;
+  it('inserts a row above 60,000 cells and rewrites formulas', async () => {
+    wb = (await owner.post('/api/workbooks').set(H).send({ title: 'Besar' })).body.id;
+    sh = (await owner.get(`/api/workbooks/${wb}`)).body.sheets[0].id;
+    const ops = [];
+    for (let r = 0; r < 20_000; r++) ops.push({ sheetId: sh, row: r, col: 0, raw: String(r + 1) }, { sheetId: sh, row: r, col: 1, raw: 'x' }, { sheetId: sh, row: r, col: 2, raw: 'y' });
+    rev = (await owner.post(`/api/worksheets/${sh}/cells/batch`).set(H).send({ baseRevision: 0, clientId: 'client-big', ops: ops.slice(0, 50_000) })).body.revision;
+    rev = (await owner.post(`/api/worksheets/${sh}/cells/batch`).set(H).send({ baseRevision: rev, clientId: 'client-big', ops: ops.slice(50_000) })).body.revision;
+    rev = (await owner.post(`/api/worksheets/${sh}/cells/batch`).set(H).send({ baseRevision: rev, clientId: 'client-big', ops: [{ sheetId: sh, row: 0, col: 3, raw: '=SUM(A1:A20000)' }] })).body.revision;
+    const t = Date.now();
+    const r = await owner.post(`/api/worksheets/${sh}/structure`).set(H).send({ axis: 'row', index: 0, count: 1, clientId: 'client-big' });
+    expect(r.status).toBe(200);
+    expect(Date.now() - t).toBeLessThan(5000);
+    const top = await owner.get(`/api/worksheets/${sh}/range?range=A1:D2`);
+    expect(top.body.cells.map((c: { row: number; col: number; raw: string }) => `${c.row}:${c.col}=${c.raw}`)).toEqual(['1:0=1', '1:1=x', '1:2=y', '1:3==SUM(A2:A20001)']);
+  });
+  it('rejects a batch made before the rows moved', async () => {
+    const stale = await editor.post(`/api/worksheets/${sh}/cells/batch`).set(H).send({ baseRevision: rev, clientId: 'client-other', ops: [{ sheetId: sh, row: 5, col: 5, raw: 'telat' }] });
+    // budi has no access here; share first, then retry as an editor of this workbook
+    expect([403, 404]).toContain(stale.status);
+    await owner.post(`/api/workbooks/${wb}/share`).set(H).send({ email: 'budi@example.test', permission: 'editor' });
+    const again = await editor.post(`/api/worksheets/${sh}/cells/batch`).set(H).send({ baseRevision: rev, clientId: 'client-other', ops: [{ sheetId: sh, row: 5, col: 5, raw: 'telat' }] });
+    expect(again.status).toBe(409);
+  });
+  it('deletes columns and history can restore the state before', async () => {
+    const del = await owner.post(`/api/worksheets/${sh}/structure`).set(H).send({ axis: 'col', index: 1, count: -2, clientId: 'client-big' });
+    expect(del.status).toBe(200);
+    const after = await owner.get(`/api/worksheets/${sh}/range?range=A2:D2`);
+    expect(after.body.cells.map((c: { col: number; raw: string }) => `${c.col}=${c.raw}`)).toEqual(['0=1', '1==SUM(A2:A20001)']);
+    const list = await owner.get(`/api/workbooks/${wb}/revisions`);
+    const beforeDelete = list.body.revisions.find((x: { label: string }) => x.label === 'Sisipkan 1 baris');
+    const res = await owner.post(`/api/workbooks/${wb}/revisions/${beforeDelete.id}/restore`).set(H).send({});
+    expect(res.status).toBe(200);
+    const back = await owner.get(`/api/worksheets/${sh}/range?range=A2:D2`);
+    expect(back.body.cells.map((c: { col: number; raw: string }) => `${c.col}=${c.raw}`)).toEqual(['0=1', '1=x', '2=y', '3==SUM(A2:A20001)']);
+  });
+});

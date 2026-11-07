@@ -1,6 +1,6 @@
 import cookieParser from 'cookie-parser';
 import express from 'express';
-import rateLimit from 'express-rate-limit';
+import { ipKey, limiter } from './lib/limits';
 import helmet from 'helmet';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -43,16 +43,17 @@ export function createApp() {
   app.use(cookieParser());
 
   const api = express.Router();
+  api.use(loadUser);
+  // Counted per signed-in user, so colleagues behind one NAT do not share a budget.
   api.use(
-    rateLimit({
+    limiter({
+      prefix: 'api',
       windowMs: 60_000,
-      limit: config.isProd ? 1200 : 100_000,
-      standardHeaders: 'draft-7',
-      legacyHeaders: false,
-      message: { error: 'Terlalu banyak permintaan. Coba lagi sebentar.' },
+      limit: config.isProd ? config.apiLimit : 100_000,
+      message: 'Terlalu banyak permintaan. Coba lagi sebentar.',
+      key: (req) => (req.user ? `u:${req.user.id}` : `ip:${ipKey(req)}`),
     }),
   );
-  api.use(loadUser);
   api.use(csrfGuard);
   api.get('/health', (_req, res) => {
     res.json({ ok: true });

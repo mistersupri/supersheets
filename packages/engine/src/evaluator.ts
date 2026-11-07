@@ -13,9 +13,31 @@ export interface EvalContext {
   /** Size of the used area, used to clip whole-row and whole-column ranges. */
   usedSize(sheetId: string): { rows: number; cols: number };
   now(): Date;
+  /** Cross-workbook data for IMPORTRANGE; 'pending' while it loads. */
+  importRange?(source: string, range: string): Scalar[][] | FormulaError | 'pending';
 }
 
-export class RangeRef {
+/** A rectangular block of values: a sheet range or a computed array. */
+export abstract class Grid {
+  abstract readonly rows: number;
+  abstract readonly cols: number;
+  abstract get(r: number, c: number): Scalar;
+  /** Row-major iteration over every value. */
+  *values(): Generator<Scalar> {
+    for (let r = 0; r < this.rows; r++) for (let c = 0; c < this.cols; c++) yield this.get(r, c);
+  }
+  toArray(): Scalar[][] {
+    const out: Scalar[][] = [];
+    for (let r = 0; r < this.rows; r++) {
+      const row: Scalar[] = [];
+      for (let c = 0; c < this.cols; c++) row.push(this.get(r, c));
+      out.push(row);
+    }
+    return out;
+  }
+}
+
+export class RangeRef extends Grid {
   constructor(
     readonly ctx: EvalContext,
     readonly sheetId: string,
@@ -23,7 +45,9 @@ export class RangeRef {
     readonly c1: number,
     readonly r2: number,
     readonly c2: number,
-  ) {}
+  ) {
+    super();
+  }
   get rows(): number {
     return this.r2 - this.r1 + 1;
   }
@@ -33,15 +57,53 @@ export class RangeRef {
   get(r: number, c: number): Scalar {
     return this.ctx.getValue(this.sheetId, this.r1 + r, this.c1 + c);
   }
-  /** Row-major iteration over every value. */
-  *values(): Generator<Scalar> {
-    for (let r = this.r1; r <= this.r2; r++) {
-      for (let c = this.c1; c <= this.c2; c++) yield this.ctx.getValue(this.sheetId, r, c);
-    }
+}
+
+/** The result of an array formula (FILTER, SEQUENCE, A1:A3*2, ...). */
+export class ArrayValue extends Grid {
+  readonly rows: number;
+  readonly cols: number;
+  constructor(readonly data: Scalar[][]) {
+    super();
+    this.rows = data.length;
+    this.cols = data.reduce((m, r) => Math.max(m, r.length), 0);
+  }
+  get(r: number, c: number): Scalar {
+    return this.data[r]?.[c] ?? null;
   }
 }
 
-export type Arg = Scalar | RangeRef;
+export type Arg = Scalar | Grid;
+
+export const MAX_ARRAY_CELLS = 200_000;
+
+/** Applies fn element by element, broadcasting single rows/columns like spreadsheets do. */
+export function lift(args: Arg[], fn: (...v: Scalar[]) => Scalar): Arg {
+  if (!args.some((a) => a instanceof Grid)) return fn(...(args as Scalar[]));
+  let rows = 1;
+  let cols = 1;
+  for (const a of args) {
+    if (a instanceof Grid) {
+      rows = Math.max(rows, a.rows);
+      cols = Math.max(cols, a.cols);
+    }
+  }
+  if (rows * cols > MAX_ARRAY_CELLS) return err.num('Hasil array terlalu besar');
+  const pick = (a: Arg, r: number, c: number): Scalar => {
+    if (!(a instanceof Grid)) return a;
+    const rr = a.rows === 1 ? 0 : r;
+    const cc = a.cols === 1 ? 0 : c;
+    if (rr >= a.rows || cc >= a.cols) return err.na();
+    return a.get(rr, cc);
+  };
+  const out: Scalar[][] = [];
+  for (let r = 0; r < rows; r++) {
+    const row: Scalar[] = [];
+    for (let c = 0; c < cols; c++) row.push(fn(...args.map((a) => pick(a, r, c))));
+    out.push(row);
+  }
+  return new ArrayValue(out);
+}
 
 // ---------- coercion helpers ----------
 
@@ -79,7 +141,7 @@ export function toBool(v: Scalar): boolean | FormulaError {
 
 /** Collapses a range argument to one value (top-left), as a scalar context would. */
 export function scalarOf(a: Arg): Scalar {
-  if (a instanceof RangeRef) {
+  if (a instanceof Grid) {
     if (a.rows === 1 && a.cols === 1) return a.get(0, 0);
     return err.value('Rentang dipakai di tempat yang membutuhkan satu nilai');
   }
@@ -110,7 +172,7 @@ export function compareValues(a: Scalar, b: Scalar): number {
 
 // ---------- evaluation ----------
 
-export type FunctionImpl = (args: Arg[], ctx: EvalContext) => Scalar;
+export type FunctionImpl = (args: Arg[], ctx: EvalContext) => Arg;
 
 export interface FunctionSpec {
   impl: FunctionImpl;
@@ -178,6 +240,40 @@ function arith(op: string, a: number, b: number): Scalar {
   return err.value();
 }
 
+function binaryScalar(op: string, l: Scalar, r: Scalar): Scalar {
+  if (isError(l)) return l;
+  if (isError(r)) return r;
+  if (op === '&') {
+    const a = toText(l);
+    const b = toText(r);
+    if (isError(a)) return a;
+    if (isError(b)) return b;
+    return a + b;
+  }
+  if (op === '=' || op === '<>' || op === '<' || op === '>' || op === '<=' || op === '>=') {
+    const c = compareValues(l, r);
+    switch (op) {
+      case '=':
+        return c === 0;
+      case '<>':
+        return c !== 0;
+      case '<':
+        return c < 0;
+      case '>':
+        return c > 0;
+      case '<=':
+        return c <= 0;
+      default:
+        return c >= 0;
+    }
+  }
+  const a = toNumber(l);
+  const b = toNumber(r);
+  if (isError(a)) return a;
+  if (isError(b)) return b;
+  return arith(op, a, b);
+}
+
 export function evaluate(node: Node, ctx: EvalContext): Arg {
   switch (node.type) {
     case 'num':
@@ -197,49 +293,21 @@ export function evaluate(node: Node, ctx: EvalContext): Arg {
     case 'paren':
       return evaluate(node.inner, ctx);
     case 'unary': {
-      const v = scalarOf(evaluate(node.arg, ctx));
-      const n = toNumber(v);
-      if (isError(n)) return n;
-      return node.op === '-' ? -n : n;
+      const op = node.op;
+      return lift([evaluate(node.arg, ctx)], (v) => {
+        const n = toNumber(v);
+        if (isError(n)) return n;
+        return op === '-' ? -n : n;
+      });
     }
-    case 'percent': {
-      const n = toNumber(scalarOf(evaluate(node.arg, ctx)));
-      return isError(n) ? n : n / 100;
-    }
+    case 'percent':
+      return lift([evaluate(node.arg, ctx)], (v) => {
+        const n = toNumber(v);
+        return isError(n) ? n : n / 100;
+      });
     case 'binary': {
-      const l = scalarOf(evaluate(node.left, ctx));
-      const r = scalarOf(evaluate(node.right, ctx));
-      if (isError(l)) return l;
-      if (isError(r)) return r;
-      if (node.op === '&') {
-        const a = toText(l);
-        const b = toText(r);
-        if (isError(a)) return a;
-        if (isError(b)) return b;
-        return a + b;
-      }
-      if (['=', '<>', '<', '>', '<=', '>='].includes(node.op)) {
-        const c = compareValues(l, r);
-        switch (node.op) {
-          case '=':
-            return c === 0;
-          case '<>':
-            return c !== 0;
-          case '<':
-            return c < 0;
-          case '>':
-            return c > 0;
-          case '<=':
-            return c <= 0;
-          case '>=':
-            return c >= 0;
-        }
-      }
-      const a = toNumber(l);
-      const b = toNumber(r);
-      if (isError(a)) return a;
-      if (isError(b)) return b;
-      return arith(node.op, a, b);
+      const op = node.op;
+      return lift([evaluate(node.left, ctx), evaluate(node.right, ctx)], (l, r) => binaryScalar(op, l, r));
     }
     case 'func': {
       const lazy = lazyRegistry.get(node.name);

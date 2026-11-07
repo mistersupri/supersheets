@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { config } from '../config';
 import { prisma } from '../db';
 import { audit } from '../lib/audit';
+import { invalidate } from '../lib/bus';
 import { badRequest, forbidden, h, notFound, parse } from '../lib/http';
 import { sendMail } from '../lib/mail';
 import { getSettings } from '../lib/settings';
@@ -55,6 +56,7 @@ sharingRouter.post(
         create: { workbookId: id, userId: target.id, permission: body.permission },
         update: { permission: body.permission },
       });
+      invalidate('workbook', id);
       await sendMail(target.email, `${req.user!.name} membagikan "${workbook.title}"`, `${req.user!.name} memberi Anda akses ${ROLE_LABEL[body.permission]} ke "${workbook.title}".\n\nBuka: ${link}${note}`);
       await notifyRoleChange(id, target.id);
       await audit(req, 'share.grant', { type: 'workbook', id }, { userId: target.id, permission: body.permission });
@@ -86,6 +88,7 @@ sharingRouter.patch(
     if (!p) throw notFound();
     if (role !== 'owner' && (body.permission === 'manager' || p.permission === 'manager')) throw forbidden('Hanya pemilik yang dapat mengubah hak kelola');
     await prisma.workbookPermission.update({ where: { id: p.id }, data: { permission: body.permission } });
+    invalidate('workbook', id);
     await notifyRoleChange(id, p.userId);
     await audit(req, 'share.update', { type: 'workbook', id }, { userId: p.userId, permission: body.permission });
     res.json({ ok: true });
@@ -104,6 +107,7 @@ sharingRouter.delete(
       if (role !== 'owner' && p.permission === 'manager') throw forbidden('Hanya pemilik yang dapat mencabut hak kelola');
     }
     await prisma.workbookPermission.delete({ where: { id: p.id } });
+    invalidate('workbook', id);
     await revokeAccess(id, p.userId);
     await audit(req, 'share.revoke', { type: 'workbook', id }, { userId: p.userId });
     res.json({ ok: true });

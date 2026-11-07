@@ -9,3 +9,5 @@ export * from './functions';
 export * from './translate';
 export * from './engine';
 export * from './model';
+export * from './arrays';
+export * from './structure';

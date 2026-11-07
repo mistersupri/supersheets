@@ -8,6 +8,7 @@ import { badRequest, h, parse } from '../lib/http';
 import { broadcast } from '../realtime';
 import { requireCapability } from '../services/access';
 import { exportDelimited, exportPdf, exportXlsx, parseDelimited, parseXlsx, writeImported } from '../services/importexport';
+import { importRange } from '../services/imports';
 import { sheetPayload } from '../services/workbooks';
 
 // Uploads stay in memory and are parsed, never written to disk or executed.
@@ -89,11 +90,22 @@ function filename(title: string, ext: string) {
 
 const exportQuery = z.object({ sheetId: z.string().uuid().optional() });
 
+/** IMPORTRANGE data for the editor: the reader needs view access to both workbooks. */
+exportRouter.get(
+  '/:id/import-range',
+  h(async (req, res) => {
+    const q = parse(z.object({ source: z.string().min(1).max(500), range: z.string().min(1).max(120) }), req.query);
+    await requireCapability(req.user!.id, req.params.id as string, 'view');
+    const values = await importRange(req.user!.id, q.source, q.range, req.params.id as string);
+    res.json({ values });
+  }),
+);
+
 exportRouter.get(
   '/:id/export/xlsx',
   h(async (req, res) => {
     const { workbook } = await requireCapability(req.user!.id, req.params.id as string, 'view');
-    const buf = await exportXlsx(workbook.id);
+    const buf = await exportXlsx(workbook.id, req.user!.id);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', filename(workbook.title, 'xlsx'));
     res.send(buf);
@@ -109,7 +121,7 @@ for (const [ext, delim, mime] of [
     h(async (req, res) => {
       const q = parse(exportQuery, req.query);
       const { workbook } = await requireCapability(req.user!.id, req.params.id as string, 'view');
-      const out = await exportDelimited(workbook.id, q.sheetId, delim);
+      const out = await exportDelimited(workbook.id, q.sheetId, delim, req.user!.id);
       res.setHeader('Content-Type', `${mime}; charset=utf-8`);
       res.setHeader('Content-Disposition', filename(`${workbook.title} - ${out.title}`, ext));
       res.send(out.text);
@@ -122,7 +134,7 @@ exportRouter.get(
   h(async (req, res) => {
     const q = parse(exportQuery, req.query);
     const { workbook } = await requireCapability(req.user!.id, req.params.id as string, 'view');
-    const buf = await exportPdf(workbook.id, workbook.title, q.sheetId);
+    const buf = await exportPdf(workbook.id, workbook.title, q.sheetId, req.user!.id);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', filename(workbook.title, 'pdf'));
     res.send(buf);

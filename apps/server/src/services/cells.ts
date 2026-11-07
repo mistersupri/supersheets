@@ -9,11 +9,14 @@ import {
   toStored,
   valueType,
   fromStored,
+  shiftIndex,
+  type StructureOp,
 } from '@opensheet/engine';
 import { config } from '../config';
 import { prisma, type Tx } from '../db';
 import { conflict, forbidden, notFound } from '../lib/http';
 import { can, type Role } from './access';
+import { loadEngine } from './imports';
 import { loadStyles, styleFromRow, styleIdFor } from './styles';
 
 /** Compact cell entry stored in revisions and snapshots: [raw, styleId]. */
@@ -24,6 +27,10 @@ export interface RevisionChanges {
   clientId?: string;
   label?: string;
   cells: { s: string; r: number; c: number; b: Entry | null; a: Entry | null }[];
+  /** Row/column insert or delete applied before `cells` (positions in `cells` are after the shift). */
+  op?: { sheetId: string; axis: 'row' | 'col'; index: number; count: number };
+  /** Cells removed by a delete, at their old positions. */
+  deleted?: { r: number; c: number; e: Entry }[];
 }
 
 export interface BatchInput {
@@ -56,7 +63,7 @@ function key(s: string, r: number, c: number) {
   return `${s}|${r}:${c}`;
 }
 
-async function lockRevision(tx: Tx, workbookId: string): Promise<number> {
+export async function lockRevision(tx: Tx, workbookId: string): Promise<number> {
   const rows = await tx.$queryRaw<{ revision: bigint }[]>`SELECT revision FROM workbooks WHERE id = ${workbookId}::uuid FOR UPDATE`;
   if (!rows.length) throw notFound('Workbook tidak ditemukan');
   return Number(rows[0].revision);
@@ -130,6 +137,11 @@ export async function applyBatch(input: BatchInput): Promise<BatchResult> {
         for (const rev of newer) {
           const ch = rev.changes as unknown as RevisionChanges;
           if (ch.clientId && ch.clientId === input.clientId) continue;
+          // Rows or columns moved since this batch was made: its positions are stale.
+          if (ch.op && input.ops.some((o) => o.sheetId === ch.op!.sheetId)) {
+            for (const o of input.ops) if (o.sheetId === ch.op.sheetId) clashes.push({ sheetId: o.sheetId, row: o.row, col: o.col });
+            continue;
+          }
           for (const c of ch.cells ?? []) {
             if (mine.has(key(c.s, c.r, c.c))) clashes.push({ sheetId: c.s, row: c.r, col: c.c });
           }
@@ -253,7 +265,9 @@ export async function stateAt(workbookId: string, revision: number): Promise<Wor
     select: { changes: true },
   });
   for (const r of revs) {
-    for (const c of (r.changes as unknown as RevisionChanges).cells ?? []) {
+    const ch = r.changes as unknown as RevisionChanges;
+    if (ch.op && state[ch.op.sheetId]) state[ch.op.sheetId] = shiftState(state[ch.op.sheetId], ch.op);
+    for (const c of ch.cells ?? []) {
       const sheet = (state[c.s] ??= {});
       if (c.a) sheet[`${c.r}:${c.c}`] = c.a;
       else delete sheet[`${c.r}:${c.c}`];
@@ -262,17 +276,20 @@ export async function stateAt(workbookId: string, revision: number): Promise<Wor
   return state;
 }
 
+function shiftState(cells: Record<string, Entry>, op: StructureOp): Record<string, Entry> {
+  const out: Record<string, Entry> = {};
+  for (const [k, e] of Object.entries(cells)) {
+    const [r, c] = k.split(':').map(Number);
+    const nr = op.axis === 'row' ? shiftIndex(r, op) : r;
+    const nc = op.axis === 'col' ? shiftIndex(c, op) : c;
+    if (nr !== null && nc !== null) out[`${nr}:${nc}`] = e;
+  }
+  return out;
+}
+
 /** Computes cached values for ops by running the formula engine over the workbook. */
-export async function computeValues(workbookId: string, ops: CellOp[]): Promise<CellOp[]> {
-  const sheets = await prisma.worksheet.findMany({ where: { workbookId }, select: { id: true, title: true } });
-  const engine = new Engine();
-  for (const s of sheets) engine.addSheet(s.id, s.title);
-  const cells = await prisma.cell.findMany({
-    where: { worksheet: { workbookId } },
-    select: { worksheetId: true, rowIndex: true, columnIndex: true, rawValue: true },
-  });
-  for (const c of cells) engine.load(c.worksheetId, [{ row: c.rowIndex, col: c.columnIndex, raw: c.rawValue ?? '' }]);
-  engine.recalcAll();
+export async function computeValues(workbookId: string, ops: CellOp[], userId?: string): Promise<CellOp[]> {
+  const engine = await loadEngine(workbookId, { userId });
   engine.setCells(ops.filter((o) => o.raw !== undefined).map((o) => ({ sheetId: o.sheetId, row: o.row, col: o.col, raw: o.raw! })));
   return ops.map((o) => (o.raw === undefined ? o : { ...o, value: toStored(engine.getValue(o.sheetId, o.row, o.col)) }));
 }

@@ -77,6 +77,12 @@ export class SyncManager {
     s.on('user:presence', (u: PresenceUser[]) => this.cb.onPresence(u));
     s.on('cell:selection', (p: Parameters<SyncCallbacks['onSelection']>[0]) => this.cb.onSelection(p));
     s.on('worksheet:update', (p: unknown) => this.cb.onSheetUpdate(p));
+    // Someone inserted or deleted rows/columns: cell positions moved, so reload.
+    s.on('worksheet:structure', (p: { sheet: unknown; clientId: string }) => {
+      if (p.clientId === this.clientId) return;
+      this.cb.onSheetUpdate({ action: 'update', sheet: p.sheet });
+      this.cb.onResync('gap');
+    });
     s.on('workbook:update', (p: unknown) => this.cb.onWorkbookUpdate(p));
     s.on('comment:update', (p: unknown) => this.cb.onComment(p));
     s.on('revision:created', (p: { revision: number; restored?: boolean; userId?: string }) => this.cb.onRevision(p));

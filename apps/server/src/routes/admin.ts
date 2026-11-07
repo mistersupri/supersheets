@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db';
 import { audit } from '../lib/audit';
+import { invalidate } from '../lib/bus';
 import { badRequest, h, HttpError, parse } from '../lib/http';
 import { getSettings, updateSettings } from '../lib/settings';
 import { hashPassword, publicUser, requireSuperAdmin } from '../services/auth';
@@ -55,6 +56,7 @@ adminRouter.patch(
       data: { role: body.role, isActive: body.isActive, ...(body.unlock ? { lockedUntil: null, failedLoginCount: 0 } : {}) },
     });
     if (body.isActive === false) await prisma.session.deleteMany({ where: { userId: id } });
+    invalidate('user', id);
     await audit(req, 'admin.user_update', { type: 'user', id }, body);
     res.json({ user: { ...publicUser(u), isActive: u.isActive } });
   }),

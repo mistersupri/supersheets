@@ -19,6 +19,7 @@ import {
 import { prisma } from '../db';
 import { badRequest } from '../lib/http';
 import { loadSheetCells, writeSnapshot } from './cells';
+import { loadEngine } from './imports';
 import { styleIdFor } from './styles';
 
 export const MAX_IMPORT_CELLS = 500_000;
@@ -250,17 +251,15 @@ interface ExportSheet {
   cells: Awaited<ReturnType<typeof loadSheetCells>>;
 }
 
-async function loadForExport(workbookId: string, sheetId?: string): Promise<{ sheets: ExportSheet[]; engine: Engine }> {
+async function loadForExport(workbookId: string, sheetId?: string, userId?: string): Promise<{ sheets: ExportSheet[]; engine: Engine }> {
   const rows = await prisma.worksheet.findMany({ where: { workbookId, ...(sheetId ? { id: sheetId } : {}) }, orderBy: { position: 'asc' }, include: { metadata: true } });
   if (!rows.length) throw badRequest('Worksheet tidak ditemukan');
   // Formulas are recomputed so exported values never rely on a stale cache.
   const all = await prisma.worksheet.findMany({ where: { workbookId }, select: { id: true, title: true } });
-  const engine = new Engine();
-  for (const s of all) engine.addSheet(s.id, s.title);
+  const engine = await loadEngine(workbookId, { userId });
   const sheets: ExportSheet[] = [];
   for (const s of all) {
     const cells = await loadSheetCells(s.id);
-    engine.load(s.id, cells);
     const row = rows.find((r) => r.id === s.id);
     if (row)
       sheets.push({
@@ -273,7 +272,6 @@ async function loadForExport(workbookId: string, sheetId?: string): Promise<{ sh
         cells,
       });
   }
-  engine.recalcAll();
   sheets.sort((a, b) => rows.findIndex((r) => r.id === a.id) - rows.findIndex((r) => r.id === b.id));
   return { sheets, engine };
 }
@@ -295,8 +293,8 @@ const NAMED_TO_EXCEL: Record<string, string> = {
   text: '@',
 };
 
-export async function exportXlsx(workbookId: string): Promise<Buffer> {
-  const { sheets, engine } = await loadForExport(workbookId);
+export async function exportXlsx(workbookId: string, userId?: string): Promise<Buffer> {
+  const { sheets, engine } = await loadForExport(workbookId, undefined, userId);
   const wb = new ExcelJS.Workbook();
   wb.creator = 'OpenSheet';
   for (const s of sheets) {
@@ -335,6 +333,25 @@ export async function exportXlsx(workbookId: string): Promise<Buffer> {
       }
       if (st.link) cell.value = { text: String(cell.value ?? st.link), hyperlink: st.link };
     }
+    // Array formulas: the anchor keeps its formula over the whole result range, the
+    // other cells carry the computed values.
+    for (const c of engine.spillCells(s.id)) {
+      const stored = toStored(c.value);
+      if (stored !== null && typeof stored !== 'object') ws.getCell(c.row + 1, c.col + 1).value = stored;
+    }
+    for (const c of s.cells) {
+      if (!c.raw.startsWith('=')) continue;
+      const area = engine.spillAreaAt(s.id, c.row, c.col);
+      if (!area || !area.ok || area.anchorRow !== c.row || area.anchorCol !== c.col) continue;
+      const cell = ws.getCell(c.row + 1, c.col + 1);
+      const stored = toStored(engine.getValue(s.id, c.row, c.col));
+      cell.value = {
+        formula: c.raw.slice(1),
+        result: (stored !== null && typeof stored === 'object' ? undefined : stored) as never,
+        shareType: 'array',
+        ref: `${colToLetters(area.c1)}${area.r1 + 1}:${colToLetters(area.c2)}${area.r2 + 1}`,
+      } as never;
+    }
     for (const m of s.metadata.merges ?? []) ws.mergeCells(m.r1 + 1, m.c1 + 1, m.r2 + 1, m.c2 + 1);
   }
   return Buffer.from(await wb.xlsx.writeBuffer());
@@ -343,24 +360,27 @@ export async function exportXlsx(workbookId: string): Promise<Buffer> {
 function displayGrid(s: ExportSheet, engine: Engine): string[][] {
   let rows = 0;
   let cols = 0;
-  for (const c of s.cells) {
+  const spilled = [...engine.spillCells(s.id)];
+  for (const c of [...s.cells, ...spilled]) {
     rows = Math.max(rows, c.row + 1);
     cols = Math.max(cols, c.col + 1);
   }
   const grid: string[][] = Array.from({ length: rows }, () => Array<string>(cols).fill(''));
+  // Values produced by array formulas (FILTER, SORT, ...) are exported too.
+  for (const c of spilled) grid[c.row][c.col] = formatValue(c.value, null);
   for (const c of s.cells) grid[c.row][c.col] = formatValue(engine.getValue(s.id, c.row, c.col), c.style?.numberFormat);
   return grid;
 }
 
-export async function exportDelimited(workbookId: string, sheetId: string | undefined, delimiter: ',' | '\t'): Promise<{ text: string; title: string }> {
-  const { sheets, engine } = await loadForExport(workbookId, sheetId);
+export async function exportDelimited(workbookId: string, sheetId: string | undefined, delimiter: ',' | '\t', userId?: string): Promise<{ text: string; title: string }> {
+  const { sheets, engine } = await loadForExport(workbookId, sheetId, userId);
   const s = sheets[0];
   const grid = displayGrid(s, engine);
   return { text: '﻿' + Papa.unparse(grid, { delimiter, newline: '\r\n' }), title: s.title };
 }
 
-export async function exportPdf(workbookId: string, title: string, sheetId?: string): Promise<Buffer> {
-  const { sheets, engine } = await loadForExport(workbookId, sheetId);
+export async function exportPdf(workbookId: string, title: string, sheetId?: string, userId?: string): Promise<Buffer> {
+  const { sheets, engine } = await loadForExport(workbookId, sheetId, userId);
   const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 36, info: { Title: title, Creator: 'OpenSheet' } });
   const chunks: Buffer[] = [];
   doc.on('data', (c: Buffer) => chunks.push(c));

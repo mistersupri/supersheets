@@ -35,6 +35,7 @@ historyRouter.get(
         revisions: revs.map((r) => {
           const ch = r.changes as unknown as RevisionChanges;
           const cells = ch.cells ?? [];
+          const moved = (ch.deleted?.length ?? 0) + cells.length;
           return {
             id: r.id,
             revision: r.revisionNumber,
@@ -42,7 +43,7 @@ historyRouter.get(
             label: ch.label ?? null,
             user: r.user,
             createdAt: r.createdAt,
-            count: cells.length,
+            count: ch.op ? moved : cells.length,
             sample: cells.slice(0, 6).map((c) => ({
               sheet: titles.get(c.s) ?? '(sheet dihapus)',
               cell: formatA1(c.r, c.c),

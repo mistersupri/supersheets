@@ -1,18 +1,20 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { config } from '../config';
 import { prisma } from '../db';
 import { audit } from '../lib/audit';
+import { invalidate } from '../lib/bus';
 import { badRequest, forbidden, h, HttpError, parse, unauthorized } from '../lib/http';
 import { sendMail } from '../lib/mail';
 import { getSettings } from '../lib/settings';
+import { ipKey, limiter } from '../lib/limits';
 import {
   checkLock,
   createSession,
   destroySession,
   hashPassword,
+  needsRehash,
   publicUser,
   recordFailure,
   recordSuccess,
@@ -26,13 +28,23 @@ export const authRouter = Router();
 // Used to spend comparable time on logins for unknown emails.
 const dummyHash = hashPassword(crypto.randomBytes(16).toString('hex'));
 
-const loginLimiter = rateLimit({
+// Two layers: a generous per-IP cap (many users can share one office or school
+// IP) and a tight per IP + email cap against password guessing. Accounts are
+// also locked after repeated failures (services/auth.ts).
+const ipLimiter = limiter({
+  prefix: 'login-ip',
   windowMs: 15 * 60_000,
-  limit: config.isProd ? 20 : 200,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  message: { error: 'Terlalu banyak percobaan. Coba lagi dalam 15 menit.' },
+  limit: config.loginIpLimit,
+  message: 'Terlalu banyak percobaan dari jaringan ini. Coba lagi dalam 15 menit.',
 });
+const accountLimiter = limiter({
+  prefix: 'login-acct',
+  windowMs: 15 * 60_000,
+  limit: config.isProd ? config.loginAccountLimit : 1000,
+  message: 'Terlalu banyak percobaan untuk akun ini. Coba lagi dalam 15 menit.',
+  key: (req) => `${ipKey(req)}|${String(req.body?.email ?? '').trim().toLowerCase().slice(0, 254)}`,
+});
+const loginLimiter = [ipLimiter, accountLimiter];
 
 const email = z.string().trim().toLowerCase().email('Email tidak valid').max(254);
 const password = z.string().min(8, 'Kata sandi minimal 8 karakter').max(200);
@@ -60,6 +72,7 @@ authRouter.post(
         update: {},
       });
       await prisma.workbookInvitation.update({ where: { id: inv.id }, data: { acceptedAt: new Date() } });
+      invalidate('workbook', inv.workbookId);
     }
     await createSession(res, req, user.id, false);
     await audit(req, 'auth.register', { type: 'user', id: user.id }, undefined, user.id);
@@ -87,6 +100,7 @@ authRouter.post(
       throw fail();
     }
     await recordSuccess(user.id);
+    if (needsRehash(user.passwordHash)) await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await hashPassword(body.password) } });
     await createSession(res, req, user.id, !!body.remember);
     await audit(req, 'auth.login', { type: 'user', id: user.id }, undefined, user.id);
     res.json({ user: publicUser(user) });
@@ -154,6 +168,7 @@ authRouter.post(
       // Sign out everywhere after a reset.
       prisma.session.deleteMany({ where: { userId: rec.userId } }),
     ]);
+    invalidate('user', rec.userId);
     await audit(req, 'auth.reset_done', { type: 'user', id: rec.userId }, undefined, rec.userId);
     res.json({ ok: true });
   }),
@@ -175,8 +190,10 @@ authRouter.patch(
       data.passwordHash = await hashPassword(body.newPassword);
     }
     const updated = await prisma.user.update({ where: { id: user.id }, data });
+    if (data.name) invalidate('user', user.id);
     if (body.newPassword) {
       await prisma.session.deleteMany({ where: { userId: user.id, NOT: { id: req.sessionId } } });
+      invalidate('user', user.id);
       await audit(req, 'auth.password_changed', { type: 'user', id: user.id });
     }
     res.json({ user: publicUser(updated) });
@@ -199,6 +216,7 @@ authRouter.post(
   requireAuth,
   h(async (req, res) => {
     const r = await prisma.session.deleteMany({ where: { userId: req.user!.id, NOT: { id: req.sessionId } } });
+    invalidate('user', req.user!.id);
     res.json({ revoked: r.count });
   }),
 );

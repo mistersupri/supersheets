@@ -59,6 +59,13 @@ export interface UndoEntry {
   label: string;
   cells: { sheetId: string; row: number; col: number; before: CellSnapshot; after: CellSnapshot }[];
   sheets: { sheetId: string; before: SheetPatch; after: SheetPatch }[];
+  /** Row/column insert or delete, undone with the inverse shift on the server. */
+  structure?: {
+    sheetId: string;
+    op: { axis: 'row' | 'col'; index: number; count: number };
+    removed: { row: number; col: number; snap: CellSnapshot }[];
+    formulas: { sheetId: string; row: number; col: number; raw: string }[];
+  };
 }
 
 const k = (r: number, c: number) => `${r}:${c}`;

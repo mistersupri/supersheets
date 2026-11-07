@@ -4,6 +4,8 @@ import type { NextFunction, Request, Response } from 'express';
 import { config } from '../config';
 import { prisma } from '../db';
 import { forbidden, unauthorized } from '../lib/http';
+import { invalidate, onInvalidate } from '../lib/bus';
+import { TtlCache } from '../lib/cache';
 
 export const SESSION_COOKIE = 'osid';
 const MAX_FAILED = 5;
@@ -27,7 +29,14 @@ declare global {
   }
 }
 
-export const hashPassword = (pw: string) => argon2.hash(pw, { type: argon2.argon2id });
+/**
+ * Argon2id with the OWASP minimum profile (19 MiB, 2 passes, 1 lane). It keeps
+ * a burst of hundreds of logins affordable on a small server; older hashes
+ * are upgraded on the next successful login.
+ */
+const ARGON = { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 } as const;
+export const hashPassword = (pw: string) => argon2.hash(pw, ARGON);
+export const needsRehash = (hash: string) => argon2.needsRehash(hash, ARGON);
 export const verifyPassword = (hash: string, pw: string) => argon2.verify(hash, pw).catch(() => false);
 
 export function sha256(s: string): string {
@@ -55,21 +64,33 @@ export async function createSession(res: Response, req: Request, userId: string,
   });
 }
 
+// Session lookups run on every request; cache them briefly. Logout, password
+// changes and deactivation invalidate immediately (also across processes).
+const sessionCache = new TtlCache<{ user: AuthUser; sessionId: string; expiresAt: number }>(30_000);
+onInvalidate('user', (userId) => sessionCache.deleteWhere((_k, v) => userId === '*' || v.user.id === userId));
+
 export async function destroySession(req: Request, res: Response) {
-  if (req.sessionId) await prisma.session.deleteMany({ where: { id: req.sessionId } });
+  if (req.sessionId) {
+    await prisma.session.deleteMany({ where: { id: req.sessionId } });
+    invalidate('user', req.user?.id ?? '*');
+  }
   res.clearCookie(SESSION_COOKIE, { path: '/' });
 }
 
 export async function userFromToken(token: string | undefined): Promise<{ user: AuthUser; sessionId: string } | null> {
   if (!token) return null;
   const id = sha256(token);
+  const hit = sessionCache.get(id);
+  if (hit && hit.expiresAt > Date.now()) return { user: hit.user, sessionId: hit.sessionId };
   const s = await prisma.session.findUnique({ where: { id }, include: { user: true } });
   if (!s) return null;
   if (s.expiresAt < new Date() || !s.user.isActive) {
     await prisma.session.deleteMany({ where: { id } });
     return null;
   }
-  return { user: publicUser(s.user), sessionId: id };
+  const out = { user: publicUser(s.user), sessionId: id };
+  sessionCache.set(id, { ...out, expiresAt: s.expiresAt.getTime() });
+  return out;
 }
 
 /** Attaches req.user when a valid session cookie is present. */

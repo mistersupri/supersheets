@@ -7,6 +7,7 @@ import { broadcast } from '../realtime';
 import { requireCapability, worksheetWorkbook } from '../services/access';
 import { applyBatch, computeValues, loadSheetCells } from '../services/cells';
 import { loadStyles } from '../services/styles';
+import { applyStructure, MAX_INSERT } from '../services/structure';
 import { formulaOpsForSheetChange, sheetPayload } from '../services/workbooks';
 
 export const worksheetsRouter = Router();
@@ -112,6 +113,30 @@ worksheetsRouter.post(
     const workbookId = await worksheetWorkbook(req.params.id as string);
     const result = await runBatch(req.user!.id, workbookId, body, req.get('x-socket-id'));
     res.json(result);
+  }),
+);
+
+/** Insert (count > 0) or delete (count < 0) rows or columns. */
+worksheetsRouter.post(
+  '/:id/structure',
+  h(async (req, res) => {
+    const id = req.params.id as string;
+    const body = parse(
+      z.object({
+        axis: z.enum(['row', 'col']),
+        index: z.number().int().min(0).max(1_048_575),
+        count: z.number().int().min(-1_048_576).max(MAX_INSERT),
+        clientId: z.string().min(4).max(64),
+      }),
+      req.body,
+    );
+    const workbookId = await worksheetWorkbook(id);
+    const { role } = await requireCapability(req.user!.id, workbookId, 'edit');
+    const result = await applyStructure({ workbookId, sheetId: id, userId: req.user!.id, role, clientId: body.clientId, op: { axis: body.axis, index: body.index, count: body.count } });
+    const sheet = await sheetPayload(id);
+    broadcast(workbookId, 'worksheet:structure', { sheet, revision: result.revision, clientId: body.clientId, op: { axis: body.axis, index: body.index, count: body.count } }, req.get('x-socket-id'));
+    broadcast(workbookId, 'revision:created', { revision: result.revision, userId: req.user!.id });
+    res.json({ ...result, sheet });
   }),
 );
 

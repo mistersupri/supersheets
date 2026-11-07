@@ -4,10 +4,11 @@ import {
   compareValues,
   EvalContext,
   functionRegistry,
+  Grid,
   FunctionImpl,
   lazyRegistry,
   LazyImpl,
-  RangeRef,
+  lift,
   scalarOf,
   toBool,
   toNumber,
@@ -51,7 +52,7 @@ const MANY = 255;
 function collectNumbers(args: Arg[]): number[] | FormulaError {
   const out: number[] = [];
   for (const a of args) {
-    if (a instanceof RangeRef) {
+    if (a instanceof Grid) {
       for (const v of a.values()) {
         if (isError(v)) return v;
         if (typeof v === 'number') out.push(v);
@@ -157,7 +158,7 @@ def('AVERAGE', 'Statistik', 'AVERAGE(nilai1, [nilai2, ...])', 'Rata-rata aritmet
 def('COUNT', 'Statistik', 'COUNT(nilai1, [nilai2, ...])', 'Menghitung sel berisi angka.', 1, MANY, (args) => {
   let c = 0;
   for (const a of args) {
-    if (a instanceof RangeRef) {
+    if (a instanceof Grid) {
       for (const v of a.values()) if (typeof v === 'number') c++;
     } else if (typeof a === 'number' || (typeof a === 'string' && !isError(toNumber(a)) && a.trim() !== '') || typeof a === 'boolean') c++;
   }
@@ -166,14 +167,14 @@ def('COUNT', 'Statistik', 'COUNT(nilai1, [nilai2, ...])', 'Menghitung sel berisi
 def('COUNTA', 'Statistik', 'COUNTA(nilai1, [nilai2, ...])', 'Menghitung sel yang tidak kosong.', 1, MANY, (args) => {
   let c = 0;
   for (const a of args) {
-    if (a instanceof RangeRef) {
+    if (a instanceof Grid) {
       for (const v of a.values()) if (v !== null && v !== '') c++;
     } else if (a !== null) c++;
   }
   return c;
 });
 def('COUNTBLANK', 'Statistik', 'COUNTBLANK(rentang)', 'Menghitung sel kosong.', 1, 1, ([a]) => {
-  if (!(a instanceof RangeRef)) return err.value('Argumen harus berupa rentang');
+  if (!(a instanceof Grid)) return err.value('Argumen harus berupa rentang');
   let c = 0;
   for (const v of a.values()) if (v === null || v === '') c++;
   return c;
@@ -201,7 +202,17 @@ def('MEDIAN', 'Statistik', 'MEDIAN(nilai1, [nilai2, ...])', 'Nilai tengah.', 1, 
 
 defLazy('IF', 'Logika', 'IF(kondisi, nilai_jika_benar, [nilai_jika_salah])', 'Memilih nilai berdasarkan kondisi.', (args, _ctx, ev) => {
   if (args.length < 2 || args.length > 3) return err.value('IF membutuhkan 2 atau 3 argumen');
-  const c = toBool(scalarOf(ev(args[0])));
+  const cond = ev(args[0]);
+  if (cond instanceof Grid && (cond.rows > 1 || cond.cols > 1)) {
+    // Array condition (ARRAYFORMULA, FILTER-style): choose element by element.
+    const t = ev(args[1]);
+    const f = args.length === 3 ? ev(args[2]) : false;
+    return lift([cond, t, f], (c, a, b) => {
+      const bb = toBool(c);
+      return isError(bb) ? bb : bb ? a : b;
+    });
+  }
+  const c = toBool(scalarOf(cond));
   if (isError(c)) return c;
   if (c) return ev(args[1]);
   return args.length === 3 ? ev(args[2]) : false;
@@ -209,20 +220,21 @@ defLazy('IF', 'Logika', 'IF(kondisi, nilai_jika_benar, [nilai_jika_salah])', 'Me
 defLazy('IFERROR', 'Logika', 'IFERROR(nilai, nilai_jika_error)', 'Mengganti hasil error dengan nilai lain.', (args, _ctx, ev) => {
   if (args.length !== 2) return err.value('IFERROR membutuhkan 2 argumen');
   const v = ev(args[0]);
-  const s = v instanceof RangeRef ? scalarOf(v) : v;
+  if (v instanceof Grid && (v.rows > 1 || v.cols > 1)) return lift([v, ev(args[1])], (x, f) => (isError(x) ? f : x));
+  const s = v instanceof Grid ? scalarOf(v) : v;
   return isError(s) ? ev(args[1]) : v;
 });
 defLazy('IFNA', 'Logika', 'IFNA(nilai, nilai_jika_na)', 'Mengganti #N/A dengan nilai lain.', (args, _ctx, ev) => {
   if (args.length !== 2) return err.value('IFNA membutuhkan 2 argumen');
   const v = ev(args[0]);
-  const s = v instanceof RangeRef ? scalarOf(v) : v;
+  const s = v instanceof Grid ? scalarOf(v) : v;
   return isError(s) && s.code === '#N/A' ? ev(args[1]) : v;
 });
 
 function logicalValues(args: Arg[]): boolean[] | FormulaError {
   const out: boolean[] = [];
   for (const a of args) {
-    if (a instanceof RangeRef) {
+    if (a instanceof Grid) {
       for (const v of a.values()) {
         if (isError(v)) return v;
         if (typeof v === 'boolean') out.push(v);
@@ -320,8 +332,8 @@ export function buildCriteria(criteria: Scalar): Matcher {
   };
 }
 
-function rangeArg(a: Arg): RangeRef | FormulaError {
-  if (a instanceof RangeRef) return a;
+function rangeArg(a: Arg): Grid | FormulaError {
+  if (a instanceof Grid) return a;
   if (isError(a)) return a;
   return err.value('Argumen harus berupa rentang');
 }
@@ -346,7 +358,7 @@ function sumOrAvgIf(args: Arg[], avg: boolean): Scalar {
   for (let r = 0; r < range.rows; r++) {
     for (let c = 0; c < range.cols; c++) {
       if (!match(range.get(r, c))) continue;
-      const v = sumRange.ctx.getValue(sumRange.sheetId, sumRange.r1 + r, sumRange.c1 + c);
+      const v = sumRange.get(r, c);
       if (isError(v)) return v;
       if (typeof v === 'number') {
         total += v;
@@ -362,7 +374,7 @@ def('SUMIF', 'Kondisional', 'SUMIF(rentang, kriteria, [rentang_jumlah])', 'Menju
 def('AVERAGEIF', 'Kondisional', 'AVERAGEIF(rentang, kriteria, [rentang_rata])', 'Rata-rata sel yang memenuhi kriteria.', 2, 3, (args) => sumOrAvgIf(args, true));
 
 function multiCriteria(ranges: Arg[], criteria: Arg[]): { ok: (r: number, c: number) => boolean; rows: number; cols: number } | FormulaError {
-  const rs: RangeRef[] = [];
+  const rs: Grid[] = [];
   for (const r of ranges) {
     const x = rangeArg(r);
     if (isError(x)) return x;
@@ -407,7 +419,7 @@ def('SUMIFS', 'Kondisional', 'SUMIFS(rentang_jumlah, rentang1, kriteria1, ...)',
 function concatAll(args: Arg[]): Scalar {
   let s = '';
   for (const a of args) {
-    if (a instanceof RangeRef) {
+    if (a instanceof Grid) {
       for (const v of a.values()) {
         const t = toText(v);
         if (isError(t)) return t;
@@ -481,7 +493,7 @@ def('TEXTJOIN', 'Teks', 'TEXTJOIN(pemisah, abaikan_kosong, teks1, ...)', 'Mengga
   if (isError(ignore)) return ignore;
   const parts: string[] = [];
   for (const a of rest) {
-    const vals = a instanceof RangeRef ? [...a.values()] : [a];
+    const vals = a instanceof Grid ? [...a.values()] : [a];
     for (const v of vals) {
       const t = toText(v);
       if (isError(t)) return t;

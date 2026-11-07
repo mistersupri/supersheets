@@ -15,6 +15,7 @@ import { ColorPicker } from './ColorPicker';
 import { isMobile, useCtrl, useEditor } from './context';
 import { roleLabel } from './controller';
 import { applySuggestion, AssistPanel, useFormulaAssist } from './formulaAssist';
+import { highlightFormula } from './FormulaHighlight';
 
 // ---------- top bar ----------
 
@@ -798,7 +799,11 @@ export function FormulaBar() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [caret, setCaret] = useState(0);
   const [active, setActive] = useState(0);
+  const [barScroll, setBarScroll] = useState(0);
   const assist = useFormulaAssist(editing?.source === 'bar' ? value : '', caret);
+  // In a cell filled by an array formula, show the anchor's formula as a hint.
+  const spillArea = !raw ? ctrl.model.engine.spillAreaAt(sheetId, sel.anchor.row, sel.anchor.col) : null;
+  const spillFormula = spillArea ? ctrl.model.raw(sheetId, spillArea.anchorRow, spillArea.anchorCol) : undefined;
 
   const go = () => {
     const t = nameBox.trim().toUpperCase();
@@ -862,13 +867,27 @@ export function FormulaBar() {
           {value || <span className="text-ink-3">{can.edit ? 'Ketuk untuk mengisi' : ''}</span>}
         </button>
       ) : (
+        <div className="relative min-w-0 flex-1">
+        {value.startsWith('=') && (
+          <div aria-hidden="true" className="addr pointer-events-none absolute inset-0 overflow-hidden px-2 text-[13px] leading-8 whitespace-pre text-ink">
+            <span className="inline-block" style={{ transform: `translateX(${-barScroll}px)` }}>
+              {highlightFormula(value)}
+            </span>
+          </div>
+        )}
         <input
           ref={inputRef}
           aria-label="Bilah formula"
           data-active-editor={editing?.source === 'bar' ? 'true' : undefined}
           aria-autocomplete="list"
           readOnly={!can.edit}
-          className={clsx('h-8 min-w-0 flex-1 bg-transparent px-2 text-[13px] text-ink focus:outline-none', value.startsWith('=') && 'addr')}
+          placeholder={spillFormula}
+          onScroll={(e) => setBarScroll(e.currentTarget.scrollLeft)}
+          onKeyUp={(e) => setBarScroll(e.currentTarget.scrollLeft)}
+          className={clsx(
+            'relative h-8 w-full min-w-0 bg-transparent px-2 text-[13px] text-ink placeholder:text-ink-3 focus:outline-none',
+            value.startsWith('=') && 'addr text-transparent caret-[var(--ink)] selection:bg-brand-soft',
+          )}
           value={value}
           onFocus={() => {
             if (!ctrl.s.editing && can.edit) ctrl.startEdit(undefined, 'bar');
@@ -906,6 +925,7 @@ export function FormulaBar() {
             }
           }}
         />
+        </div>
       )}
       {editing?.source === 'bar' && !mobile && (
         <div className="absolute top-full left-36 z-30 mt-1">
@@ -1121,6 +1141,13 @@ export function StatusBar() {
   const info = sheet?.info.get(`${sel.anchor.row}:${sel.anchor.col}`);
   const protectedReason = ctrl.protectedReason(ctrl.s.activeSheetId, sel.anchor.row, sel.anchor.col);
   const link = ctrl.model.style(ctrl.s.activeSheetId, sel.anchor.row, sel.anchor.col)?.link;
+  const spill = ctrl.model.engine.spillAreaAt(ctrl.s.activeSheetId, sel.anchor.row, sel.anchor.col);
+  const spillNote =
+    spill && !(spill.anchorRow === sel.anchor.row && spill.anchorCol === sel.anchor.col)
+      ? `Hasil array dari ${formatA1(spill.anchorRow, spill.anchorCol)}`
+      : spill && !spill.ok
+        ? 'Hasil array terhalang data di sel tujuan'
+        : null;
   return (
     <div className="flex min-h-7 items-center gap-3 border-t border-line bg-surface px-3 text-xs text-ink-2">
       <span className="addr">{formatA1(sel.anchor.row, sel.anchor.col)}</span>
@@ -1130,6 +1157,7 @@ export function StatusBar() {
           {relativeTime(info.at)}
         </span>
       )}
+      {spillNote && <span className={clsx(spill?.ok ? 'text-ink-2' : 'text-danger')}>{spillNote}</span>}
       {protectedReason && (
         <span className="inline-flex items-center gap-1 text-accent">
           <Icon.Lock size={12} /> {protectedReason}

@@ -23,4 +23,16 @@ export const config = {
   webDist: process.env.WEB_DIST ?? '',
   /** Set behind a reverse proxy so req.ip and secure cookies work. */
   trustProxy: process.env.TRUST_PROXY === '1',
+  /** Optional Redis: shares realtime rooms, cache invalidation and rate limits across processes. */
+  redisUrl: process.env.REDIS_URL ?? '',
+  /** Number of worker processes (cluster mode). More than 1 requires REDIS_URL. */
+  workers: Number(process.env.WORKERS ?? 1),
+  /** PostgreSQL connections per process. */
+  dbPoolMax: Number(process.env.DB_POOL_MAX ?? 20),
+  /** Login attempts per IP per 15 minutes. Offices and schools often share one public IP. */
+  loginIpLimit: Number(process.env.LOGIN_IP_LIMIT ?? 3000),
+  /** Login attempts per IP + email per 15 minutes. */
+  loginAccountLimit: Number(process.env.LOGIN_ACCOUNT_LIMIT ?? 10),
+  /** API requests per signed-in user (or per IP when signed out) per minute. */
+  apiLimit: Number(process.env.API_RATE_LIMIT ?? 600),
 };
