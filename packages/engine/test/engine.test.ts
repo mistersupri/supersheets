@@ -214,7 +214,7 @@ describe('dependency tracking', () => {
   it('never uses eval or Function', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
-    const dir = path.resolve(__dirname, '../src');
+    const dir = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../src');
     for (const f of fs.readdirSync(dir)) {
       const src = fs.readFileSync(path.join(dir, f), 'utf8');
       expect(src).not.toMatch(/\beval\s*\(/);

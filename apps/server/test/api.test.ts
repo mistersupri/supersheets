@@ -62,7 +62,7 @@ describe('auth', () => {
     expect((await a.post('/api/auth/login').set(H).send({ email: 'budi@example.test', password: 'rahasia-123', remember: true })).status).toBe(200);
     expect((await a.get('/api/auth/me')).status).toBe(200);
     expect((await a.post('/api/auth/logout').set(H)).status).toBe(200);
-    expect((await a.get('/api/auth/me')).status).toBe(401);
+    expect((await a.get('/api/auth/me')).body.user).toBeNull();
   });
   it('resets a password with a one-time token', async () => {
     // Token is delivered by mail; here we create one directly through the API flow and read it from the DB.

@@ -1,0 +1,253 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens.
+ * Paper-toned neutrals with one ledger green (selection, primary action) and
+ * one rust accent reserved for things that need attention (comments, conflicts,
+ * stars). Everything else is neutral so user data stays the loudest thing.
+ */
+:root {
+  --bg: #f6f5f1;
+  --surface: #ffffff;
+  --surface-2: #efeee9;
+  --surface-3: #e6e5df;
+  --ink: #1a1e1c;
+  --ink-2: #4d5551;
+  --ink-3: #5f6763;
+  --line: #dcddd6;
+  --line-2: #c4c7c0;
+  --brand: #17603f;
+  --brand-hover: #124f33;
+  --brand-ink: #ffffff;
+  --brand-soft: #e2eee7;
+  --accent: #9c4219;
+  --accent-soft: #f7e7dd;
+  --danger: #b42318;
+  --danger-soft: #fbe9e7;
+  --grid-line: #e2e3dd;
+  --header-bg: #f1f1ec;
+  --header-ink: #555d59;
+  --header-active: #dbe9e1;
+  --sel-fill: rgba(23, 96, 63, 0.1);
+  --scrim: rgba(18, 22, 20, 0.32);
+  --shadow-pop: 0 1px 2px rgba(20, 24, 22, 0.08), 0 8px 24px rgba(20, 24, 22, 0.12);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #121514;
+    --surface: #1a1e1c;
+    --surface-2: #232826;
+    --surface-3: #2c322f;
+    --ink: #e6eae7;
+    --ink-2: #b0b8b3;
+    --ink-3: #9aa39e;
+    --line: #2d3330;
+    --line-2: #434b47;
+    --brand: #5bbf8c;
+    --brand-hover: #74cda0;
+    --brand-ink: #0d1a13;
+    --brand-soft: #1f3329;
+    --accent: #e8976a;
+    --accent-soft: #3a2519;
+    --danger: #f2837a;
+    --danger-soft: #3b1d1a;
+    --grid-line: #2a302d;
+    --header-bg: #1e2321;
+    --header-ink: #a7b0ab;
+    --header-active: #26392f;
+    --sel-fill: rgba(91, 191, 140, 0.16);
+    --scrim: rgba(0, 0, 0, 0.55);
+    --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.45);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #121514;
+  --surface: #1a1e1c;
+  --surface-2: #232826;
+  --surface-3: #2c322f;
+  --ink: #e6eae7;
+  --ink-2: #b0b8b3;
+  --ink-3: #9aa39e;
+  --line: #2d3330;
+  --line-2: #434b47;
+  --brand: #5bbf8c;
+  --brand-hover: #74cda0;
+  --brand-ink: #0d1a13;
+  --brand-soft: #1f3329;
+  --accent: #e8976a;
+  --accent-soft: #3a2519;
+  --danger: #f2837a;
+  --danger-soft: #3b1d1a;
+  --grid-line: #2a302d;
+  --header-bg: #1e2321;
+  --header-ink: #a7b0ab;
+  --header-active: #26392f;
+  --sel-fill: rgba(91, 191, 140, 0.16);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-soft: var(--brand-soft);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --shadow-pop: var(--shadow-pop);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* One focus treatment everywhere: a 2px brand ring, never removed without replacement. */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--brand-soft);
+}
+
+/* Pressable feedback: a small scale-down confirms the press (Emil Kowalski, 100-160ms). */
+.press {
+  transition: transform 140ms var(--ease-out), background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.press:active:not(:disabled):not([data-disabled]) {
+  transform: scale(0.97);
+}
+
+/* Menus, popovers and selects scale in from their trigger. */
+.pop {
+  transform-origin: var(--transform-origin);
+  transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out);
+}
+.pop[data-starting-style],
+.pop[data-ending-style] {
+  opacity: 0;
+  transform: scale(0.97);
+}
+
+/* Dialogs are not anchored to a trigger, so they stay centred. */
+.dialog {
+  transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
+}
+.dialog[data-starting-style],
+.dialog[data-ending-style] {
+  opacity: 0;
+  transform: translate(-50%, -48%) scale(0.98);
+}
+.scrim {
+  transition: opacity 200ms var(--ease-out);
+}
+.scrim[data-starting-style],
+.scrim[data-ending-style] {
+  opacity: 0;
+}
+
+/* Bottom sheets on phones slide from the edge they live on. */
+.sheet {
+  transition: transform 280ms var(--ease-drawer);
+}
+.sheet[data-starting-style],
+.sheet[data-ending-style] {
+  transform: translateY(100%);
+}
+
+/* Side panels (history, comments) slide from the right edge. */
+.panel-in {
+  animation: panel-in 220ms var(--ease-out);
+}
+@keyframes panel-in {
+  from {
+    transform: translateX(16px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .press:active:not(:disabled) {
+    transform: none;
+  }
+  .pop[data-starting-style],
+  .pop[data-ending-style],
+  .dialog[data-starting-style],
+  .dialog[data-ending-style] {
+    transform: translate(-50%, -50%);
+  }
+  .pop[data-starting-style],
+  .pop[data-ending-style] {
+    transform: none;
+  }
+  .sheet {
+    transition: opacity 200ms ease;
+  }
+  .sheet[data-starting-style],
+  .sheet[data-ending-style] {
+    transform: none;
+    opacity: 0;
+  }
+  .panel-in {
+    animation: none;
+  }
+}
+
+/* The address voice: cell references, the name box and formulas use Plex Mono. */
+.addr {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@layer base {
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+}
+
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}

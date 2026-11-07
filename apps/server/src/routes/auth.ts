@@ -104,7 +104,11 @@ authRouter.post(
 authRouter.get(
   '/me',
   h(async (req, res) => {
-    if (!req.user) throw unauthorized();
+    // 200 with user: null keeps the signed-out state out of the browser's error console.
+    if (!req.user) {
+      res.json({ user: null });
+      return;
+    }
     const settings = await getSettings();
     res.json({ user: req.user, settings: { linkSharingEnabled: settings.linkSharingEnabled } });
   }),

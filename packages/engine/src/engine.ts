@@ -152,6 +152,35 @@ export class Engine {
     }
   }
 
+  /**
+   * Evaluates a formula as if it lived in (row, col) without storing it.
+   * Used for conditional-format rules and data validation.
+   */
+  evaluateFormula(sheetId: string, row: number, col: number, formula: string): Scalar {
+    let ast: Node;
+    try {
+      ast = parseFormula(formula.startsWith('=') ? formula.slice(1) : formula);
+    } catch {
+      return err.parse();
+    }
+    const ctx: EvalContext = {
+      sheetId,
+      row,
+      col,
+      getValue: (sid, r, c) => this.getValue(sid, r, c),
+      resolveSheet: (name) => this.resolveSheet(name),
+      usedSize: (sid) => this.usedSize(sid),
+      now: () => this.nowFn(),
+    };
+    try {
+      const out = evaluate(ast, ctx);
+      if (out instanceof RangeRef) return out.rows === 1 && out.cols === 1 ? out.get(0, 0) : err.value();
+      return out;
+    } catch {
+      return err.value();
+    }
+  }
+
   // ---------- writes ----------
 
   /** Loads cells without recalculating each one; call recalcAll() afterwards. */

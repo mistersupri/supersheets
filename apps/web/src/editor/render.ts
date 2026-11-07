@@ -1,0 +1,715 @@
+import { CellStyle, colToLetters, formatGeneralNumber, isError, Merge, parseRangeA1, RangeAddress, rangeContains, resolvePattern, Scalar, translateFormula as translate } from '@opensheet/engine';
+import { conditionMatches, displayText, EditorController } from './controller';
+import { HEADER_H, HEADER_W } from './geometry';
+
+export interface Theme {
+  paper: string;
+  ink: string;
+  ink2: string;
+  grid: string;
+  headerBg: string;
+  headerInk: string;
+  headerActive: string;
+  brand: string;
+  brandInk: string;
+  selFill: string;
+  accent: string;
+  danger: string;
+  line2: string;
+  dark: boolean;
+}
+
+export function readTheme(el: Element): Theme {
+  const cs = getComputedStyle(el);
+  const v = (n: string) => cs.getPropertyValue(n).trim();
+  return {
+    paper: v('--surface'),
+    ink: v('--ink'),
+    ink2: v('--ink-2'),
+    grid: v('--grid-line'),
+    headerBg: v('--header-bg'),
+    headerInk: v('--header-ink'),
+    headerActive: v('--header-active'),
+    brand: v('--brand'),
+    brandInk: v('--brand-ink'),
+    selFill: v('--sel-fill'),
+    accent: v('--accent'),
+    danger: v('--danger'),
+    line2: v('--line-2'),
+    dark: cs.colorScheme === 'dark',
+  };
+}
+
+export interface View {
+  w: number;
+  h: number;
+  scrollLeft: number;
+  scrollTop: number;
+}
+
+export interface Overlay {
+  fillPreview?: RangeAddress | null;
+  resizeGuide?: { axis: 'row' | 'col'; pos: number } | null;
+  refHighlights?: { range: RangeAddress; color: string }[];
+  presenceColors: Record<string, { color: string; name: string }>;
+}
+
+const FONT_FAMILY = '"IBM Plex Sans", system-ui, sans-serif';
+export const DEFAULT_FONT_PT = 10;
+export const REF_COLORS = ['#2563A8', '#B4481F', '#7A3E9D', '#2F7D32', '#A15C00', '#C2185B'];
+
+function fontFor(style: CellStyle | null): { font: string; px: number } {
+  const px = Math.round(((style?.fontSize ?? DEFAULT_FONT_PT) * 4) / 3);
+  const family = style?.fontFamily ? `"${style.fontFamily}", ${FONT_FAMILY}` : FONT_FAMILY;
+  return { font: `${style?.italic ? 'italic ' : ''}${style?.bold ? '600' : '400'} ${px}px ${family}`, px };
+}
+
+function luminance(hex: string): number {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return 0.5;
+  const n = parseInt(m[1], 16);
+  const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+}
+
+function contrast(a: string, b: string): number {
+  const la = luminance(a);
+  const lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/** Keeps user-chosen colours readable in both themes. */
+function textColorFor(style: CellStyle | null, bg: string | undefined, t: Theme): string {
+  const surface = bg ?? t.paper;
+  if (style?.textColor) {
+    if (contrast(style.textColor, surface) >= 2.5) return style.textColor;
+  }
+  if (bg) return luminance(bg) > 0.4 ? '#1A1E1C' : '#F2F4F3';
+  return t.ink;
+}
+
+export class Renderer {
+  private measureCache = new Map<string, number>();
+
+  constructor(private ctrl: EditorController) {}
+
+  measure(ctx: CanvasRenderingContext2D, font: string, text: string): number {
+    const key = font + '\u0000' + text;
+    let w = this.measureCache.get(key);
+    if (w === undefined) {
+      if (ctx.font !== font) ctx.font = font;
+      w = ctx.measureText(text).width;
+      if (this.measureCache.size > 20_000) this.measureCache.clear();
+      this.measureCache.set(key, w);
+    }
+    return w;
+  }
+
+  draw(ctx: CanvasRenderingContext2D, view: View, t: Theme, overlay: Overlay) {
+    const ctrl = this.ctrl;
+    const sheet = ctrl.sheet();
+    if (!sheet) return;
+    const { rows, cols } = ctrl.axes();
+    const fr = Math.min(sheet.frozenRows, rows.count);
+    const fc = Math.min(sheet.frozenColumns, cols.count);
+    const fh = rows.pos(fr);
+    const fw = cols.pos(fc);
+    const colX = (c: number) => HEADER_W + cols.pos(c) - (c >= fc ? view.scrollLeft : 0);
+    const rowY = (r: number) => HEADER_H + rows.pos(r) - (r >= fr ? view.scrollTop : 0);
+
+    const visCols: number[] = [];
+    const scrollCols: number[] = [];
+    for (let c = 0; c < fc; c++) if (!cols.hidden(c)) visCols.push(c);
+    for (let c = cols.indexAt(fw + view.scrollLeft); c < cols.count && colX(c) < view.w; c++) if (!cols.hidden(c)) scrollCols.push(c);
+    const frozenRows: number[] = [];
+    const scrollRows: number[] = [];
+    for (let r = 0; r < fr; r++) if (!rows.hidden(r)) frozenRows.push(r);
+    for (let r = rows.indexAt(fh + view.scrollTop); r < rows.count && rowY(r) < view.h; r++) if (!rows.hidden(r)) scrollRows.push(r);
+
+    ctx.fillStyle = t.paper;
+    ctx.fillRect(0, 0, view.w, view.h);
+
+    const gx = HEADER_W + fw;
+    const gy = HEADER_H + fh;
+    const regions: [number[], number[], [number, number, number, number]][] = [
+      [scrollRows, scrollCols, [gx, gy, view.w - gx, view.h - gy]],
+      [scrollRows, visCols, [HEADER_W, gy, fw, view.h - gy]],
+      [frozenRows, scrollCols, [gx, HEADER_H, view.w - gx, fh]],
+      [frozenRows, visCols, [HEADER_W, HEADER_H, fw, fh]],
+    ];
+    for (const [rs, cs, clip] of regions) {
+      if (!rs.length || !cs.length || clip[2] <= 0 || clip[3] <= 0) continue;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(...clip);
+      ctx.clip();
+      this.drawCells(ctx, t, rs, cs, colX, rowY, rows.size.bind(rows), cols.size.bind(cols));
+      ctx.restore();
+    }
+
+    // Selection and collaborators, clipped to the grid area.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(HEADER_W, HEADER_H, view.w - HEADER_W, view.h - HEADER_H);
+    ctx.clip();
+    const rectOf = (r: RangeAddress) => {
+      const x1 = colX(r.c1);
+      let x2 = colX(r.c2) + cols.size(r.c2);
+      const y1 = rowY(r.r1);
+      let y2 = rowY(r.r2) + rows.size(r.r2);
+      if (r.c1 < fc && r.c2 >= fc) x2 = Math.max(x2, gx);
+      if (r.r1 < fr && r.r2 >= fr) y2 = Math.max(y2, gy);
+      return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+    };
+    const st = ctrl.s;
+    for (const h of overlay.refHighlights ?? []) {
+      const b = rectOf(h.range);
+      ctx.strokeStyle = h.color;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
+      ctx.globalAlpha = 0.08;
+      ctx.fillStyle = h.color;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.globalAlpha = 1;
+    }
+    for (const [socketId, rs] of Object.entries(st.remoteSelections)) {
+      if (rs.sheetId !== sheet.id || !rs.selection) continue;
+      const p = overlay.presenceColors[socketId];
+      if (!p) continue;
+      const b = rectOf(rs.selection);
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
+      ctx.font = `500 10px ${FONT_FAMILY}`;
+      const tw = ctx.measureText(p.name).width + 8;
+      ctx.fillStyle = p.color;
+      ctx.fillRect(b.x + b.w - tw, b.y - 14, tw, 14);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      ctx.fillText(p.name, b.x + b.w - tw + 4, b.y - 7);
+    }
+    const sel = ctrl.selectionRange();
+    const sb = rectOf(sel);
+    const a = st.selection.anchor;
+    const am = ctrl.mergeAt(a.row, a.col) ?? { r1: a.row, c1: a.col, r2: a.row, c2: a.col };
+    const ab = rectOf(am);
+    if (sel.r1 !== sel.r2 || sel.c1 !== sel.c2) {
+      ctx.fillStyle = t.selFill;
+      ctx.fillRect(sb.x, sb.y, sb.w, sb.h);
+      ctx.strokeStyle = t.brand;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sb.x + 0.5, sb.y + 0.5, sb.w - 1, sb.h - 1);
+    }
+    if (!st.editing) {
+      ctx.strokeStyle = t.brand;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(ab.x + 1, ab.y + 1, ab.w - 2, ab.h - 2);
+      if (st.can.edit) {
+        ctx.fillStyle = t.brand;
+        ctx.fillRect(sb.x + sb.w - 4, sb.y + sb.h - 4, 7, 7);
+        ctx.strokeStyle = t.paper;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(sb.x + sb.w - 4.5, sb.y + sb.h - 4.5, 8, 8);
+      }
+    }
+    if (overlay.fillPreview) {
+      const b = rectOf(overlay.fillPreview);
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = t.ink2;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+      ctx.setLineDash([]);
+    }
+    if (st.copyRange && st.copyRange.sheetId === sheet.id) {
+      const b = rectOf(st.copyRange);
+      ctx.setLineDash([5, 3]);
+      ctx.strokeStyle = t.brand;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+
+    // Frozen dividers.
+    ctx.fillStyle = t.line2;
+    if (fc > 0) ctx.fillRect(gx - 1, 0, 2, view.h);
+    if (fr > 0) ctx.fillRect(0, gy - 1, view.w, 2);
+
+    this.drawHeaders(ctx, t, view, [...visCols, ...scrollCols], [...frozenRows, ...scrollRows], colX, rowY, rows.size.bind(rows), cols.size.bind(cols), sel, fw, fh);
+
+    if (overlay.resizeGuide) {
+      ctx.fillStyle = t.brand;
+      if (overlay.resizeGuide.axis === 'col') ctx.fillRect(overlay.resizeGuide.pos - 1, 0, 2, view.h);
+      else ctx.fillRect(0, overlay.resizeGuide.pos - 1, view.w, 2);
+    }
+  }
+
+  private conditional(sheetId: string, row: number, col: number, v: Scalar, text: string): Partial<CellStyle> | null {
+    const sheet = this.ctrl.model.sheet(sheetId)!;
+    if (!sheet.conditionalFormats.length) return null;
+    let out: Partial<CellStyle> | null = null;
+    for (const cf of sheet.conditionalFormats) {
+      const r = parseRangeA1(cf.range);
+      if (!r || !rangeContains(r, row, col)) continue;
+      let hit: boolean;
+      if (cf.rule.op === 'formula') {
+        const f = cf.rule.value ?? '';
+        const res = this.ctrl.model.engine.evaluateFormula(sheetId, row, col, shiftRuleFormula(f, row - r.r1, col - r.c1));
+        hit = res === true || (typeof res === 'number' && res !== 0);
+      } else hit = conditionMatches(cf.rule.op, cf.rule.value, cf.rule.value2, v, text);
+      if (hit) out = { ...cf.rule.style, ...(out ?? {}) };
+    }
+    return out;
+  }
+
+  private drawCells(
+    ctx: CanvasRenderingContext2D,
+    t: Theme,
+    rows: number[],
+    cols: number[],
+    colX: (c: number) => number,
+    rowY: (r: number) => number,
+    rowH: (r: number) => number,
+    colW: (c: number) => number,
+  ) {
+    const ctrl = this.ctrl;
+    const st = ctrl.s;
+    const sheet = ctrl.sheet()!;
+    const sid = sheet.id;
+    const model = ctrl.model;
+    const merges = (sheet.metadata.merges ?? []).filter((m) => rows.some((r) => r >= m.r1 && r <= m.r2) && cols.some((c) => c >= m.c1 && c <= m.c2));
+    const inMerge = (r: number, c: number): Merge | null => {
+      for (const m of merges) if (r >= m.r1 && r <= m.r2 && c >= m.c1 && c <= m.c2) return m;
+      return null;
+    };
+    const x0 = colX(cols[0]);
+    const x1 = colX(cols[cols.length - 1]) + colW(cols[cols.length - 1]);
+    const y0 = rowY(rows[0]);
+    const y1 = rowY(rows[rows.length - 1]) + rowH(rows[rows.length - 1]);
+
+    // Gather cell info once for the region.
+    type Info = { r: number; c: number; v: Scalar; text: string; style: CellStyle | null; bg?: string };
+    const infos: Info[] = [];
+    for (const r of rows) {
+      for (const c of cols) {
+        if (inMerge(r, c)) continue;
+        const raw = model.raw(sid, r, c);
+        let style = model.style(sid, r, c);
+        if (!raw && !style) continue;
+        const v = model.value(sid, r, c);
+        const text = st.showFormulas && raw.startsWith('=') ? raw : displayText(v, style);
+        const cf = this.conditional(sid, r, c, v, text);
+        if (cf) style = { ...(style ?? {}), ...cf };
+        infos.push({ r, c, v, text, style, bg: style?.backgroundColor });
+      }
+    }
+
+    // 1. Backgrounds.
+    for (const i of infos) {
+      if (!i.bg) continue;
+      ctx.fillStyle = i.bg;
+      ctx.fillRect(colX(i.c), rowY(i.r), colW(i.c), rowH(i.r));
+    }
+
+    // 2. Grid lines.
+    if (sheet.metadata.showGridlines !== false) {
+      ctx.fillStyle = t.grid;
+      for (const c of cols) ctx.fillRect(colX(c) + colW(c) - 1, y0, 1, y1 - y0);
+      for (const r of rows) ctx.fillRect(x0, rowY(r) + rowH(r) - 1, x1 - x0, 1);
+    }
+
+    // 3. Merged blocks cover the grid lines inside them.
+    for (const m of merges) {
+      const mx = colX(m.c1);
+      const my = rowY(m.r1);
+      let mw = 0;
+      for (let c = m.c1; c <= m.c2; c++) mw += colW(c);
+      let mh = 0;
+      for (let r = m.r1; r <= m.r2; r++) mh += rowH(r);
+      let style = model.style(sid, m.r1, m.c1);
+      const v = model.value(sid, m.r1, m.c1);
+      const raw = model.raw(sid, m.r1, m.c1);
+      const text = st.showFormulas && raw.startsWith('=') ? raw : displayText(v, style);
+      const cf = this.conditional(sid, m.r1, m.c1, v, text);
+      if (cf) style = { ...(style ?? {}), ...cf };
+      ctx.fillStyle = style?.backgroundColor ?? t.paper;
+      ctx.fillRect(mx, my, mw - 1, mh - 1);
+      if (sheet.metadata.showGridlines !== false) {
+        ctx.fillStyle = t.grid;
+        ctx.fillRect(mx + mw - 1, my, 1, mh);
+        ctx.fillRect(mx, my + mh - 1, mw, 1);
+      }
+      if (text) this.drawText(ctx, t, text, v, style, mx, my, mw, mh, mw);
+      this.drawBorders(ctx, style, mx, my, mw, mh);
+    }
+
+    // 4. Text, with overflow into empty neighbours for unwrapped left-aligned text.
+    const lastCol = cols[cols.length - 1];
+    const filter = ctrl.activeFilter();
+    for (const i of infos) {
+      if (!i.text) continue;
+      const x = colX(i.c);
+      const y = rowY(i.r);
+      // Leave room for the filter button in the header row of a filter.
+      const onFilterHeader = !!filter && i.r === filter.r1 && i.c >= filter.c1 && i.c <= filter.c2;
+      const w = colW(i.c) - (onFilterHeader ? 20 : 0);
+      const h = rowH(i.r);
+      const align = i.style?.hAlign ?? defaultAlign(i.v);
+      let clipW = w;
+      if (!onFilterHeader && !i.style?.wrap && align === 'left' && typeof i.v !== 'number') {
+        const { font } = fontFor(i.style);
+        const need = this.measure(ctx, font, i.text) + 6 + (i.style?.indent ?? 0) * 10;
+        let c = i.c;
+        while (clipW < need && c < lastCol) {
+          const next = cols[cols.indexOf(c) + 1];
+          if (next === undefined || model.raw(sid, i.r, next) !== '' || inMerge(i.r, next)) break;
+          clipW += colW(next);
+          c = next;
+        }
+      }
+      this.drawText(ctx, t, i.text, i.v, i.style, x, y, w, h, clipW);
+    }
+
+    // 5. Borders.
+    for (const i of infos) if (i.style?.borders) this.drawBorders(ctx, i.style, colX(i.c), rowY(i.r), colW(i.c), rowH(i.r));
+
+    // 6. Indicators: comments, validation, filter buttons, links.
+    const commented = new Set(st.comments.filter((c) => c.worksheetId === sid && !c.resolved).map((c) => c.cellReference));
+    for (const r of rows) {
+      for (const c of cols) {
+        const x = colX(c);
+        const y = rowY(r);
+        const w = colW(c);
+        const h = rowH(r);
+        if (commented.size && commented.has(`${colToLetters(c)}${r + 1}`)) {
+          ctx.fillStyle = t.accent;
+          ctx.beginPath();
+          ctx.moveTo(x + w - 10, y);
+          ctx.lineTo(x + w - 1, y);
+          ctx.lineTo(x + w - 1, y + 9);
+          ctx.fill();
+        }
+      }
+    }
+    for (const v of sheet.validations) {
+      const vr = parseRangeA1(v.range);
+      if (!vr) continue;
+      for (const r of rows) {
+        if (r < vr.r1 || r > vr.r2) continue;
+        for (const c of cols) {
+          if (c < vr.c1 || c > vr.c2) continue;
+          const x = colX(c);
+          const y = rowY(r);
+          const w = colW(c);
+          const h = rowH(r);
+          if (v.rule.kind === 'list' && v.rule.showDropdown) {
+            ctx.strokeStyle = t.ink2;
+            ctx.lineWidth = 1.25;
+            ctx.beginPath();
+            ctx.moveTo(x + w - 13, y + h / 2 - 2);
+            ctx.lineTo(x + w - 9.5, y + h / 2 + 1.5);
+            ctx.lineTo(x + w - 6, y + h / 2 - 2);
+            ctx.stroke();
+          }
+          if (v.rule.kind === 'checkbox') {
+            const val = model.value(sid, r, c);
+            const s = 13;
+            const bx = x + (w - s) / 2;
+            const by = y + (h - s) / 2;
+            ctx.fillStyle = t.paper;
+            ctx.fillRect(bx, by, s, s);
+            ctx.strokeStyle = val === true ? t.brand : t.ink2;
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(bx + 0.75, by + 0.75, s - 1.5, s - 1.5);
+            if (val === true) {
+              ctx.fillStyle = t.brand;
+              ctx.fillRect(bx, by, s, s);
+              ctx.strokeStyle = t.brandInk;
+              ctx.beginPath();
+              ctx.moveTo(bx + 3, by + 6.5);
+              ctx.lineTo(bx + 5.5, by + 9);
+              ctx.lineTo(bx + 10, by + 4);
+              ctx.stroke();
+            }
+          }
+          if (ctrl.isInvalid(sid, r, c)) {
+            ctx.fillStyle = t.danger;
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + 7, y);
+            ctx.lineTo(x, y + 7);
+            ctx.fill();
+          }
+        }
+      }
+    }
+    const f = ctrl.activeFilter();
+    if (f && rows.includes(f.r1)) {
+      const y = rowY(f.r1);
+      const h = rowH(f.r1);
+      for (const c of cols) {
+        if (c < f.c1 || c > f.c2) continue;
+        const x = colX(c) + colW(c) - 20;
+        const active = !!f.criteria?.[c];
+        ctx.fillStyle = active ? t.brand : t.paper;
+        ctx.fillRect(x, y + (h - 16) / 2, 16, 16);
+        ctx.strokeStyle = active ? t.brand : t.line2;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + (h - 16) / 2 + 0.5, 15, 15);
+        ctx.fillStyle = active ? t.brandInk : t.ink2;
+        const cy = y + h / 2;
+        ctx.beginPath();
+        ctx.moveTo(x + 4, cy - 3);
+        ctx.lineTo(x + 12, cy - 3);
+        ctx.lineTo(x + 9, cy + 1);
+        ctx.lineTo(x + 9, cy + 4);
+        ctx.lineTo(x + 7, cy + 5);
+        ctx.lineTo(x + 7, cy + 1);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+  }
+
+  private drawText(ctx: CanvasRenderingContext2D, t: Theme, text: string, v: Scalar, style: CellStyle | null, x: number, y: number, w: number, h: number, clipW: number) {
+    const { font, px } = fontFor(style);
+    if (ctx.font !== font) ctx.font = font;
+    const align = style?.hAlign ?? defaultAlign(v);
+    const valign = style?.vAlign ?? 'bottom';
+    const pad = 4;
+    const indent = (style?.indent ?? 0) * 10;
+    let display = text;
+    const isNumber = typeof v === 'number';
+    if (isNumber && !style?.wrap) {
+      const avail = w - pad * 2;
+      if (this.measure(ctx, font, display) > avail) {
+        // Numbers never spill: shorten precision for General, otherwise show ###.
+        if (!resolvePattern(style?.numberFormat)) {
+          for (let p = 9; p >= 1; p--) {
+            const s = formatGeneralNumber(Number((v as number).toPrecision(p)));
+            if (this.measure(ctx, font, s) <= avail) {
+              display = s;
+              break;
+            }
+          }
+        }
+        if (this.measure(ctx, font, display) > avail) display = '#'.repeat(Math.max(1, Math.floor(avail / this.measure(ctx, font, '#'))));
+      }
+    }
+    ctx.fillStyle = style?.link ? t.brand : isError(v) ? t.danger : textColorFor(style, style?.backgroundColor, t);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, clipW - 1, h - 1);
+    ctx.clip();
+    ctx.textBaseline = 'alphabetic';
+    const lineH = Math.round(px * 1.3);
+    if (style?.rotation) {
+      ctx.translate(x + w / 2, y + h / 2);
+      ctx.rotate((-style.rotation * Math.PI) / 180);
+      ctx.textAlign = 'center';
+      ctx.fillText(display, 0, px / 3);
+      ctx.restore();
+      return;
+    }
+    let lines = [display];
+    if (style?.wrap) lines = wrapLines(display, w - pad * 2 - indent, (s) => this.measure(ctx, font, s));
+    else if (display.includes('\n')) lines = [display.split('\n')[0]];
+    const blockH = lines.length * lineH;
+    let ty: number;
+    if (valign === 'top') ty = y + pad + px;
+    else if (valign === 'middle') ty = y + (h - blockH) / 2 + px * 0.95;
+    else ty = y + h - pad - (blockH - lineH) - Math.round(px * 0.28);
+    for (const line of lines) {
+      const tw = this.measure(ctx, font, line);
+      let tx: number;
+      if (align === 'right') tx = x + w - pad - tw - indent;
+      else if (align === 'center') tx = x + (w - tw) / 2;
+      else tx = x + pad + indent;
+      ctx.textAlign = 'left';
+      ctx.fillText(line, tx, ty);
+      if (style?.underline || style?.link) ctx.fillRect(tx, ty + 2, tw, 1);
+      if (style?.strike) ctx.fillRect(tx, ty - px * 0.3, tw, 1);
+      ty += lineH;
+    }
+    ctx.restore();
+  }
+
+  private drawBorders(ctx: CanvasRenderingContext2D, style: CellStyle | null, x: number, y: number, w: number, h: number) {
+    const b = style?.borders;
+    if (!b) return;
+    const side = (s: NonNullable<typeof b.top>, x1: number, y1: number, x2: number, y2: number) => {
+      const width = s.style === 'thick' ? 3 : s.style === 'medium' ? 2 : 1;
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = width;
+      ctx.setLineDash(s.style === 'dashed' ? [4, 2] : s.style === 'dotted' ? [1, 2] : []);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      if (s.style === 'double') {
+        const dx = y1 === y2 ? 0 : 2;
+        const dy = y1 === y2 ? 2 : 0;
+        ctx.beginPath();
+        ctx.moveTo(x1 + dx, y1 + dy);
+        ctx.lineTo(x2 + dx, y2 + dy);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    };
+    if (b.top) side(b.top, x, y + 0.5, x + w, y + 0.5);
+    if (b.bottom) side(b.bottom, x, y + h - 0.5, x + w, y + h - 0.5);
+    if (b.left) side(b.left, x + 0.5, y, x + 0.5, y + h);
+    if (b.right) side(b.right, x + w - 0.5, y, x + w - 0.5, y + h);
+  }
+
+  private drawHeaders(
+    ctx: CanvasRenderingContext2D,
+    t: Theme,
+    view: View,
+    cols: number[],
+    rows: number[],
+    colX: (c: number) => number,
+    rowY: (r: number) => number,
+    rowH: (r: number) => number,
+    colW: (c: number) => number,
+    sel: RangeAddress,
+    fw: number,
+    fh: number,
+  ) {
+    const ctrl = this.ctrl;
+    const { rows: rAxis, cols: cAxis } = ctrl.axes();
+    const allRows = sel.r1 === 0 && sel.r2 >= rAxis.count - 1;
+    const allCols = sel.c1 === 0 && sel.c2 >= cAxis.count - 1;
+    // Column header band.
+    ctx.fillStyle = t.headerBg;
+    ctx.fillRect(0, 0, view.w, HEADER_H);
+    ctx.fillRect(0, 0, HEADER_W, view.h);
+    ctx.font = `500 11px ${FONT_FAMILY}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const sheet = ctrl.sheet()!;
+    const fc = sheet.frozenColumns;
+    const fr = sheet.frozenRows;
+    const drawCol = (c: number) => {
+      const x = colX(c);
+      const w = colW(c);
+      const inSel = c >= sel.c1 && c <= sel.c2;
+      if (inSel) {
+        ctx.fillStyle = allRows ? t.brand : t.headerActive;
+        ctx.fillRect(x, 0, w, HEADER_H);
+      }
+      ctx.fillStyle = t.grid;
+      ctx.fillRect(x + w - 1, 0, 1, HEADER_H);
+      ctx.fillStyle = inSel ? (allRows ? t.brandInk : t.ink) : t.headerInk;
+      ctx.font = `${inSel ? 600 : 500} 11px ${FONT_FAMILY}`;
+      ctx.fillText(colToLetters(c), x + w / 2, HEADER_H / 2 + 0.5);
+      // Mark hidden neighbours so they can be found again.
+      if (c + 1 < cAxis.count && cAxis.hidden(c + 1)) {
+        ctx.fillStyle = t.ink2;
+        ctx.fillRect(x + w - 3, 6, 2, HEADER_H - 12);
+      }
+    };
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(HEADER_W + fw, 0, view.w, HEADER_H);
+    ctx.clip();
+    for (const c of cols) if (c >= fc) drawCol(c);
+    ctx.restore();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(HEADER_W, 0, fw, HEADER_H);
+    ctx.clip();
+    for (const c of cols) if (c < fc) drawCol(c);
+    ctx.restore();
+
+    const drawRow = (r: number) => {
+      const y = rowY(r);
+      const h = rowH(r);
+      const inSel = r >= sel.r1 && r <= sel.r2;
+      if (inSel) {
+        ctx.fillStyle = allCols ? t.brand : t.headerActive;
+        ctx.fillRect(0, y, HEADER_W, h);
+      }
+      ctx.fillStyle = t.grid;
+      ctx.fillRect(0, y + h - 1, HEADER_W, 1);
+      ctx.fillStyle = inSel ? (allCols ? t.brandInk : t.ink) : t.headerInk;
+      ctx.font = `${inSel ? 600 : 500} 11px ${FONT_FAMILY}`;
+      ctx.fillText(String(r + 1), HEADER_W / 2, y + h / 2 + 0.5);
+      if (r + 1 < rAxis.count && rAxis.hidden(r + 1)) {
+        ctx.fillStyle = t.ink2;
+        ctx.fillRect(8, y + h - 3, HEADER_W - 16, 2);
+      }
+    };
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, HEADER_H + fh, HEADER_W, view.h);
+    ctx.clip();
+    for (const r of rows) if (r >= fr) drawRow(r);
+    ctx.restore();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, HEADER_H, HEADER_W, fh);
+    ctx.clip();
+    for (const r of rows) if (r < fr) drawRow(r);
+    ctx.restore();
+
+    // Header edges and the corner.
+    ctx.fillStyle = t.line2;
+    ctx.fillRect(0, HEADER_H - 1, view.w, 1);
+    ctx.fillRect(HEADER_W - 1, 0, 1, view.h);
+    ctx.fillStyle = t.headerBg;
+    ctx.fillRect(0, 0, HEADER_W - 1, HEADER_H - 1);
+    ctx.fillStyle = t.line2;
+    ctx.beginPath();
+    ctx.moveTo(HEADER_W - 5, HEADER_H - 14);
+    ctx.lineTo(HEADER_W - 5, HEADER_H - 5);
+    ctx.lineTo(HEADER_W - 14, HEADER_H - 5);
+    ctx.fill();
+  }
+}
+
+export function defaultAlign(v: Scalar): 'left' | 'center' | 'right' {
+  if (typeof v === 'number') return 'right';
+  if (typeof v === 'boolean' || isError(v)) return 'center';
+  return 'left';
+}
+
+function wrapLines(text: string, width: number, measure: (s: string) => number): string[] {
+  const out: string[] = [];
+  for (const para of text.split('\n')) {
+    const words = para.split(/(\s+)/);
+    let line = '';
+    for (const w of words) {
+      const next = line + w;
+      if (measure(next) <= width || line === '') {
+        // Break very long words.
+        if (line === '' && measure(w) > width) {
+          let chunk = '';
+          for (const ch of w) {
+            if (measure(chunk + ch) > width && chunk) {
+              out.push(chunk);
+              chunk = ch;
+            } else chunk += ch;
+          }
+          line = chunk;
+        } else line = next;
+      } else {
+        out.push(line.trimEnd());
+        line = w.trimStart();
+      }
+    }
+    out.push(line.trimEnd());
+  }
+  return out;
+}
+
+/** Conditional-format formulas are written for the top-left cell and shift with the range. */
+function shiftRuleFormula(f: string, dr: number, dc: number): string {
+  if (!dr && !dc) return f;
+  return translate(f.startsWith('=') ? f : '=' + f, dr, dc);
+}
