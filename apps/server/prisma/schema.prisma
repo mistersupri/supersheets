@@ -1,0 +1,352 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id               String    @id @default(uuid()) @db.Uuid
+  name             String    @db.VarChar(120)
+  email            String    @unique @db.VarChar(254)
+  passwordHash     String    @map("password_hash")
+  role             String    @default("user") @db.VarChar(20) // super_admin | user
+  avatar           String?
+  isActive         Boolean   @default(true) @map("is_active")
+  failedLoginCount Int       @default(0) @map("failed_login_count")
+  lockedUntil      DateTime? @map("locked_until")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  sessions      Session[]
+  workbooks     Workbook[]           @relation("owner")
+  permissions   WorkbookPermission[]
+  folders       Folder[]
+  stars         WorkbookStar[]
+  comments      WorkbookComment[]
+  replies       WorkbookCommentReply[]
+  revisions     WorkbookRevision[]
+  resetTokens   PasswordReset[]
+  auditLogs     AuditLog[]
+  opens         WorkbookOpen[]
+
+  @@map("users")
+}
+
+model Session {
+  id         String   @id @db.VarChar(64) // sha256 of the cookie token
+  userId     String   @map("user_id") @db.Uuid
+  expiresAt  DateTime @map("expires_at")
+  rememberMe Boolean  @default(false) @map("remember_me")
+  userAgent  String?  @map("user_agent")
+  ip         String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model PasswordReset {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash") @db.VarChar(64)
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_resets")
+}
+
+model SystemSetting {
+  key   String @id @db.VarChar(64)
+  value Json
+
+  @@map("system_settings")
+}
+
+model Folder {
+  id        String    @id @default(uuid()) @db.Uuid
+  ownerId   String    @map("owner_id") @db.Uuid
+  parentId  String?   @map("parent_id") @db.Uuid
+  name      String    @db.VarChar(120)
+  createdAt DateTime  @default(now()) @map("created_at")
+  owner     User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  parent    Folder?   @relation("tree", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Folder[]  @relation("tree")
+  workbooks Workbook[]
+
+  @@index([ownerId])
+  @@map("folders")
+}
+
+model Workbook {
+  id          String    @id @default(uuid()) @db.Uuid
+  ownerId     String    @map("owner_id") @db.Uuid
+  title       String    @db.VarChar(200)
+  description String?
+  folderId    String?   @map("folder_id") @db.Uuid
+  color       String    @default("green") @db.VarChar(20)
+  isTrashed   Boolean   @default(false) @map("is_trashed")
+  trashedAt   DateTime? @map("trashed_at")
+  linkAccess  String    @default("restricted") @map("link_access") @db.VarChar(20) // restricted | view | comment | edit
+  revision    BigInt    @default(0)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  owner       User                 @relation("owner", fields: [ownerId], references: [id], onDelete: Cascade)
+  folder      Folder?              @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  worksheets  Worksheet[]
+  permissions WorkbookPermission[]
+  invitations WorkbookInvitation[]
+  revisions   WorkbookRevision[]
+  snapshots   WorkbookSnapshot[]
+  comments    WorkbookComment[]
+  stars       WorkbookStar[]
+  opens       WorkbookOpen[]
+
+  @@index([ownerId])
+  @@map("workbooks")
+}
+
+model WorkbookStar {
+  userId     String   @map("user_id") @db.Uuid
+  workbookId String   @map("workbook_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workbook   Workbook @relation(fields: [workbookId], references: [id], onDelete: Cascade)
+
+  @@id([userId, workbookId])
+  @@map("workbook_stars")
+}
+
+model WorkbookOpen {
+  userId     String   @map("user_id") @db.Uuid
+  workbookId String   @map("workbook_id") @db.Uuid
+  openedAt   DateTime @default(now()) @map("opened_at")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workbook   Workbook @relation(fields: [workbookId], references: [id], onDelete: Cascade)
+
+  @@id([userId, workbookId])
+  @@map("workbook_opens")
+}
+
+model Worksheet {
+  id                 String   @id @default(uuid()) @db.Uuid
+  workbookId         String   @map("workbook_id") @db.Uuid
+  title              String   @db.VarChar(100)
+  position           Int
+  defaultColumnWidth Int      @default(100) @map("default_column_width")
+  defaultRowHeight   Int      @default(24) @map("default_row_height")
+  frozenRows         Int      @default(0) @map("frozen_rows")
+  frozenColumns      Int      @default(0) @map("frozen_columns")
+  isProtected        Boolean  @default(false) @map("is_protected")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  workbook           Workbook             @relation(fields: [workbookId], references: [id], onDelete: Cascade)
+  cells              Cell[]
+  metadata           WorksheetMetadata?
+  dataValidations    DataValidation[]
+  conditionalFormats ConditionalFormat[]
+  protectedRanges    ProtectedRange[]
+  comments           WorkbookComment[]
+
+  @@index([workbookId])
+  @@map("worksheets")
+}
+
+model WorksheetMetadata {
+  worksheetId String    @id @map("worksheet_id") @db.Uuid
+  data        Json      @default("{}")
+  worksheet   Worksheet @relation(fields: [worksheetId], references: [id], onDelete: Cascade)
+
+  @@map("worksheet_metadata")
+}
+
+model Cell {
+  id              String     @id @default(uuid()) @db.Uuid
+  worksheetId     String     @map("worksheet_id") @db.Uuid
+  rowIndex        Int        @map("row_index")
+  columnIndex     Int        @map("column_index")
+  rawValue        String?    @map("raw_value")
+  formula         String?
+  calculatedValue Json?      @map("calculated_value")
+  dataType        String     @default("empty") @map("data_type") @db.VarChar(16)
+  styleId         String?    @map("style_id") @db.Uuid
+  updatedBy       String?    @map("updated_by") @db.Uuid
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+  worksheet       Worksheet  @relation(fields: [worksheetId], references: [id], onDelete: Cascade)
+  style           CellStyle? @relation(fields: [styleId], references: [id])
+
+  @@unique([worksheetId, rowIndex, columnIndex])
+  @@map("cells")
+}
+
+model CellStyle {
+  id              String  @id @default(uuid()) @db.Uuid
+  hash            String  @unique @db.VarChar(64)
+  fontFamily      String? @map("font_family") @db.VarChar(80)
+  fontSize        Int?    @map("font_size")
+  bold            Boolean @default(false)
+  italic          Boolean @default(false)
+  underline       Boolean @default(false)
+  textColor       String? @map("text_color") @db.VarChar(20)
+  backgroundColor String? @map("background_color") @db.VarChar(20)
+  horizontalAlign String? @map("horizontal_align") @db.VarChar(10)
+  verticalAlign   String? @map("vertical_align") @db.VarChar(10)
+  numberFormat    String? @map("number_format") @db.VarChar(80)
+  borderConfig    Json?   @map("border_config")
+  wrapText        Boolean @default(false) @map("wrap_text")
+  extra           Json?
+  cells           Cell[]
+
+  @@map("cell_styles")
+}
+
+model WorkbookPermission {
+  id         String   @id @default(uuid()) @db.Uuid
+  workbookId String   @map("workbook_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  permission String   @db.VarChar(20) // viewer | commenter | editor | manager
+  createdAt  DateTime @default(now()) @map("created_at")
+  workbook   Workbook @relation(fields: [workbookId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workbookId, userId])
+  @@map("workbook_permissions")
+}
+
+model WorkbookInvitation {
+  id         String    @id @default(uuid()) @db.Uuid
+  workbookId String    @map("workbook_id") @db.Uuid
+  email      String    @db.VarChar(254)
+  permission String    @db.VarChar(20)
+  invitedBy  String    @map("invited_by") @db.Uuid
+  acceptedAt DateTime? @map("accepted_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  workbook   Workbook  @relation(fields: [workbookId], references: [id], onDelete: Cascade)
+
+  @@unique([workbookId, email])
+  @@map("workbook_invitations")
+}
+
+model WorkbookRevision {
+  id             String   @id @default(uuid()) @db.Uuid
+  workbookId     String   @map("workbook_id") @db.Uuid
+  revisionNumber BigInt   @map("revision_number")
+  userId         String?  @map("user_id") @db.Uuid
+  kind           String   @default("cells") @db.VarChar(20)
+  changes        Json
+  createdAt      DateTime @default(now()) @map("created_at")
+  workbook       Workbook @relation(fields: [workbookId], references: [id], onDelete: Cascade)
+  user           User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([workbookId, revisionNumber])
+  @@map("workbook_revisions")
+}
+
+model WorkbookSnapshot {
+  id             String   @id @default(uuid()) @db.Uuid
+  workbookId     String   @map("workbook_id") @db.Uuid
+  revisionNumber BigInt   @map("revision_number")
+  data           Json
+  createdAt      DateTime @default(now()) @map("created_at")
+  workbook       Workbook @relation(fields: [workbookId], references: [id], onDelete: Cascade)
+
+  @@index([workbookId, revisionNumber])
+  @@map("workbook_snapshots")
+}
+
+model WorkbookComment {
+  id            String    @id @default(uuid()) @db.Uuid
+  workbookId    String    @map("workbook_id") @db.Uuid
+  worksheetId   String    @map("worksheet_id") @db.Uuid
+  cellReference String    @map("cell_reference") @db.VarChar(20)
+  userId        String    @map("user_id") @db.Uuid
+  content       String
+  resolved      Boolean   @default(false)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  workbook      Workbook  @relation(fields: [workbookId], references: [id], onDelete: Cascade)
+  worksheet     Worksheet @relation(fields: [worksheetId], references: [id], onDelete: Cascade)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replies       WorkbookCommentReply[]
+
+  @@index([workbookId])
+  @@map("workbook_comments")
+}
+
+model WorkbookCommentReply {
+  id        String          @id @default(uuid()) @db.Uuid
+  commentId String          @map("comment_id") @db.Uuid
+  userId    String          @map("user_id") @db.Uuid
+  content   String
+  createdAt DateTime        @default(now()) @map("created_at")
+  comment   WorkbookComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("workbook_comments_replies")
+}
+
+model DataValidation {
+  id          String    @id @default(uuid()) @db.Uuid
+  worksheetId String    @map("worksheet_id") @db.Uuid
+  range       String    @db.VarChar(40)
+  rule        Json
+  worksheet   Worksheet @relation(fields: [worksheetId], references: [id], onDelete: Cascade)
+
+  @@map("data_validations")
+}
+
+model ConditionalFormat {
+  id          String    @id @default(uuid()) @db.Uuid
+  worksheetId String    @map("worksheet_id") @db.Uuid
+  range       String    @db.VarChar(40)
+  rule        Json
+  position    Int       @default(0)
+  worksheet   Worksheet @relation(fields: [worksheetId], references: [id], onDelete: Cascade)
+
+  @@map("conditional_formats")
+}
+
+model ProtectedRange {
+  id          String    @id @default(uuid()) @db.Uuid
+  worksheetId String    @map("worksheet_id") @db.Uuid
+  range       String?   @db.VarChar(40) // null = whole sheet
+  description String?
+  editorIds   String[]  @map("editor_ids") @db.Uuid
+  worksheet   Worksheet @relation(fields: [worksheetId], references: [id], onDelete: Cascade)
+
+  @@map("protected_ranges")
+}
+
+model FileAttachment {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  workbookId String?  @map("workbook_id") @db.Uuid
+  filename   String   @db.VarChar(255)
+  mimeType   String   @map("mime_type") @db.VarChar(120)
+  size       Int
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("file_attachments")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  action     String   @db.VarChar(60)
+  targetType String?  @map("target_type") @db.VarChar(30)
+  targetId   String?  @map("target_id")
+  detail     Json?
+  ip         String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@map("audit_logs")
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@opensheet/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "db:migrate": "prisma migrate deploy",
+    "db:dev": "prisma migrate dev"
+  },
+  "devDependencies": {
+    "prisma": "7.10.1"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "dotenv": "^18.0.9",
+    "pg": "^8.23.1"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "opensheet",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter ./apps/* dev",
+    "build": "pnpm --filter @opensheet/engine build && pnpm --filter @opensheet/web build && pnpm --filter @opensheet/server build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
