@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { Icon } from '../components/icons';
-import { Avatar, Button, Dialog, DropdownMenu, IconButton, MenuItem, MenuSeparator, menuItemClass, menuPopupClass, SubMenu } from '../components/ui';
+import { Avatar, Button, Dialog, DropdownMenu, gridFocusTarget, IconButton, MenuItem, MenuSeparator, menuItemClass, menuPopupClass, SubMenu } from '../components/ui';
 import { UserMenu } from '../components/UserMenu';
 import { api, errorMessage } from '../lib/api';
 import { relativeTime } from '../lib/format';
@@ -173,7 +173,9 @@ function MenuPanel({ children }: { children: ReactNode }) {
   return (
     <BMenu.Portal>
       <BMenu.Positioner sideOffset={2} align="start" className="z-50 outline-none">
-        <BMenu.Popup className={menuPopupClass}>{children}</BMenu.Popup>
+        <BMenu.Popup className={menuPopupClass} finalFocus={gridFocusTarget}>
+          {children}
+        </BMenu.Popup>
       </BMenu.Positioner>
     </BMenu.Portal>
   );
@@ -706,6 +708,7 @@ export function Toolbar() {
       <Divider />
       <DropdownMenu
         label="Batas"
+        finalFocus={gridFocusTarget}
         trigger={
           <button type="button" aria-label="Batas" disabled={ro} className="press inline-flex h-8 min-w-8 items-center justify-center rounded-md text-ink-2 hover:bg-surface-2 disabled:opacity-40 max-md:h-11 max-md:min-w-11">
             <Icon.Borders />
@@ -748,6 +751,7 @@ export function Toolbar() {
       </IconButton>
       <DropdownMenu
         label="Perataan vertikal"
+        finalFocus={gridFocusTarget}
         trigger={
           <button type="button" aria-label="Perataan vertikal" disabled={ro} className="press inline-flex h-8 min-w-8 items-center justify-center rounded-md text-ink-2 hover:bg-surface-2 disabled:opacity-40 max-md:h-11 max-md:min-w-11">
             {st.vAlign === 'top' ? <Icon.VTop /> : st.vAlign === 'middle' ? <Icon.VMiddle /> : <Icon.VBottom />}
@@ -763,6 +767,7 @@ export function Toolbar() {
       </IconButton>
       <DropdownMenu
         label="Rotasi teks"
+        finalFocus={gridFocusTarget}
         trigger={
           <button type="button" aria-label="Rotasi teks" disabled={ro} className="press inline-flex h-8 min-w-8 items-center justify-center rounded-md text-ink-2 hover:bg-surface-2 disabled:opacity-40 max-md:h-11 max-md:min-w-11">
             <Icon.Rotate />

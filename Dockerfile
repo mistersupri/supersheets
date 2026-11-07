@@ -9,7 +9,7 @@ COPY apps/server/package.json apps/server/
 COPY apps/web/package.json apps/web/
 RUN pnpm install --frozen-lockfile
 COPY . .
-RUN cd apps/server && npx prisma generate && cd ../web && npx vite build && cd ../server && npx tsup
+RUN cd apps/server && DATABASE_URL=postgresql://build:build@localhost:5432/build npx prisma generate && cd ../web && npx vite build && cd ../server && npx tsup
 ENV NODE_ENV=production PORT=3000 WEB_DIST=/app/apps/web/dist UV_THREADPOOL_SIZE=16
 WORKDIR /app/apps/server
 EXPOSE 3000

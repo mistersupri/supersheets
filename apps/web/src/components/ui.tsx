@@ -229,22 +229,32 @@ export function DropdownMenu({
   children,
   align = 'start',
   label,
+  finalFocus,
 }: {
   trigger: ReactNode;
   children: ReactNode;
   align?: 'start' | 'end' | 'center';
   label?: string;
+  /** Where focus goes when the menu closes (default: back to the trigger). */
+  finalFocus?: () => HTMLElement | boolean | null;
 }) {
   return (
     <BMenu.Root>
       <BMenu.Trigger render={trigger as React.ReactElement} aria-label={label} />
       <BMenu.Portal>
         <BMenu.Positioner sideOffset={4} align={align} className="z-50 outline-none">
-          <BMenu.Popup className={menuPopupClass}>{children}</BMenu.Popup>
+          <BMenu.Popup className={menuPopupClass} finalFocus={finalFocus}>
+            {children}
+          </BMenu.Popup>
         </BMenu.Positioner>
       </BMenu.Portal>
     </BMenu.Root>
   );
+}
+
+/** The spreadsheet's keyboard target, so menus can hand focus back to the grid. */
+export function gridFocusTarget(): HTMLElement | true {
+  return document.querySelector<HTMLElement>('[aria-roledescription="spreadsheet"]') ?? true;
 }
 
 export function EmptyState({ title, body, action }: { title: string; body?: ReactNode; action?: ReactNode }) {

@@ -2,7 +2,7 @@ import { ContextMenu } from '@base-ui/react/context-menu';
 import { formatA1, parseRangeA1, RangeAddress } from '@opensheet/engine';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { menuItemClass, menuPopupClass } from '../components/ui';
+import { gridFocusTarget, menuItemClass, menuPopupClass } from '../components/ui';
 import { subscribeTheme } from '../lib/theme';
 import { CellEditor } from './CellEditor';
 import { isMobile, useCtrl, useEditor } from './context';
@@ -862,7 +862,7 @@ function GridContextMenu({ onAfter }: { onAfter: () => void }) {
   return (
     <ContextMenu.Portal>
       <ContextMenu.Positioner className="z-50 outline-none">
-        <ContextMenu.Popup className={menuPopupClass}>
+        <ContextMenu.Popup className={menuPopupClass} finalFocus={gridFocusTarget}>
           {can.edit && <Item onClick={() => clip(true)} hint="Ctrl+X">Potong</Item>}
           <Item onClick={() => clip(false)} hint="Ctrl+C">Salin</Item>
           {can.edit && (
