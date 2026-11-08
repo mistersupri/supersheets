@@ -156,19 +156,68 @@ export class Renderer {
       ctx.restore();
     }
 
-    // Selection and collaborators, clipped to the grid area.
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(HEADER_W, HEADER_H, view.w - HEADER_W, view.h - HEADER_H);
-    ctx.clip();
-    const rectOf = (r: RangeAddress) => {
-      const x1 = colX(r.c1);
-      let x2 = colX(r.c2) + cols.size(r.c2);
-      const y1 = rowY(r.r1);
-      let y2 = rowY(r.r2) + rows.size(r.r2);
-      if (r.c1 < fc && r.c2 >= fc) x2 = Math.max(x2, gx);
-      if (r.r1 < fr && r.r2 >= fr) y2 = Math.max(y2, gy);
-      return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+    // Overlays (selection, filter range, copy outline, collaborators) are painted pane by pane:
+    // frozen corner, frozen rows, frozen columns and the scrolling body. Each pane clips to its own
+    // screen area, so a selection that has scrolled behind the frozen rows or columns is hidden
+    // there instead of being drawn on top of the frozen cells.
+    const panes = [
+      { r: [0, fr - 1], c: [0, fc - 1], clip: [HEADER_W, HEADER_H, fw, fh] },
+      { r: [0, fr - 1], c: [fc, Infinity], clip: [gx, HEADER_H, view.w - gx, fh] },
+      { r: [fr, Infinity], c: [0, fc - 1], clip: [HEADER_W, gy, fw, view.h - gy] },
+      { r: [fr, Infinity], c: [fc, Infinity], clip: [gx, gy, view.w - gx, view.h - gy] },
+    ];
+    type Box = { x: number; y: number; w: number; h: number };
+    interface Paint {
+      fill?: { color: string; alpha: number };
+      stroke?: { color: string; width: number; dash?: number[] };
+      /** Called for the piece that holds the range's top right / bottom right corner. */
+      onTopRight?: (b: Box) => void;
+      onBottomRight?: (b: Box) => void;
+    }
+    const paint = (R: RangeAddress, p: Paint) => {
+      for (const pane of panes) {
+        const sub = { r1: Math.max(R.r1, pane.r[0]), r2: Math.min(R.r2, pane.r[1]), c1: Math.max(R.c1, pane.c[0]), c2: Math.min(R.c2, pane.c[1]) };
+        if (sub.r1 > sub.r2 || sub.c1 > sub.c2) continue;
+        const [cx, cy, cw, ch] = pane.clip;
+        if (cw <= 0 || ch <= 0) continue;
+        const x1 = colX(sub.c1);
+        const y1 = rowY(sub.r1);
+        const x2 = colX(sub.c2) + cols.size(sub.c2);
+        const y2 = rowY(sub.r2) + rows.size(sub.r2);
+        const b = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(cx, cy, cw, ch);
+        ctx.clip();
+        if (p.fill) {
+          ctx.globalAlpha = p.fill.alpha;
+          ctx.fillStyle = p.fill.color;
+          ctx.fillRect(b.x, b.y, b.w, b.h);
+          ctx.globalAlpha = 1;
+        }
+        if (p.stroke) {
+          // Only the edges that belong to the range itself: the seam between two panes is not an edge.
+          const w = p.stroke.width;
+          const i = w / 2;
+          ctx.strokeStyle = p.stroke.color;
+          ctx.lineWidth = w;
+          ctx.setLineDash(p.stroke.dash ?? []);
+          const line = (ax: number, ay: number, bx: number, by: number) => {
+            ctx.beginPath();
+            ctx.moveTo(ax, ay);
+            ctx.lineTo(bx, by);
+            ctx.stroke();
+          };
+          if (sub.r1 === R.r1) line(b.x, b.y + i, b.x + b.w, b.y + i);
+          if (sub.r2 === R.r2) line(b.x, b.y + b.h - i, b.x + b.w, b.y + b.h - i);
+          if (sub.c1 === R.c1) line(b.x + i, b.y, b.x + i, b.y + b.h);
+          if (sub.c2 === R.c2) line(b.x + b.w - i, b.y, b.x + b.w - i, b.y + b.h);
+          ctx.setLineDash([]);
+        }
+        if (p.onTopRight && sub.r1 === R.r1 && sub.c2 === R.c2) p.onTopRight(b);
+        if (p.onBottomRight && sub.r2 === R.r2 && sub.c2 === R.c2) p.onBottomRight(b);
+        ctx.restore();
+      }
     };
     const st = ctrl.s;
     // The range a filter covers: header row tinted, whole range outlined. Shared filters use the
@@ -177,113 +226,61 @@ export class Renderer {
     if (flt && flt.c2 >= flt.c1) {
       const shared = ctrl.filterIsShared();
       const color = shared ? t.brand : t.accent;
-      const body = rectOf(flt);
-      const head = rectOf({ r1: flt.r1, r2: flt.r1, c1: flt.c1, c2: flt.c2 });
-      ctx.globalAlpha = 0.12;
-      ctx.fillStyle = color;
-      ctx.fillRect(head.x, head.y, head.w, head.h);
-      ctx.globalAlpha = 1;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash(shared ? [] : [6, 3]);
-      ctx.strokeRect(body.x + 0.75, body.y + 0.75, body.w - 1.5, body.h - 1.5);
-      ctx.setLineDash([]);
+      paint({ r1: flt.r1, r2: flt.r1, c1: flt.c1, c2: flt.c2 }, { fill: { color, alpha: 0.12 } });
+      paint(flt, { stroke: { color, width: 1.5, dash: shared ? [] : [6, 3] } });
     }
-    if (st.filterPreview) {
-      const b = rectOf(st.filterPreview);
-      ctx.globalAlpha = 0.1;
-      ctx.fillStyle = t.brand;
-      ctx.fillRect(b.x, b.y, b.w, b.h);
-      ctx.globalAlpha = 1;
-      ctx.strokeStyle = t.brand;
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 3]);
-      ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
-      ctx.setLineDash([]);
-    }
+    if (st.filterPreview) paint(st.filterPreview, { fill: { color: t.brand, alpha: 0.1 }, stroke: { color: t.brand, width: 2, dash: [5, 3] } });
+    // The numbers a formula suggestion would use.
+    if (st.suggestPreview) paint(st.suggestPreview, { fill: { color: t.accent, alpha: 0.12 }, stroke: { color: t.accent, width: 2, dash: [5, 3] } });
     for (const h of overlay.refHighlights ?? []) {
-      const b = rectOf(h.range);
       const color = t.refs[h.index % t.refs.length];
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      ctx.setLineDash([]);
-      ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
-      ctx.globalAlpha = 0.08;
-      ctx.fillStyle = color;
-      ctx.fillRect(b.x, b.y, b.w, b.h);
-      ctx.globalAlpha = 1;
+      paint(h.range, { fill: { color, alpha: 0.08 }, stroke: { color, width: 2 } });
     }
     for (const [socketId, rs] of Object.entries(st.remoteSelections)) {
       if (rs.sheetId !== sheet.id || !rs.selection) continue;
       const p = overlay.presenceColors[socketId];
       if (!p) continue;
-      const b = rectOf(rs.selection);
-      ctx.strokeStyle = p.color;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
-      ctx.font = `500 10px ${FONT_FAMILY}`;
-      const tw = ctx.measureText(p.name).width + 8;
-      ctx.fillStyle = p.color;
-      ctx.fillRect(b.x + b.w - tw, b.y - 14, tw, 14);
-      ctx.fillStyle = '#FFFFFF';
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = 'left';
-      ctx.fillText(p.name, b.x + b.w - tw + 4, b.y - 7);
+      paint(rs.selection, {
+        stroke: { color: p.color, width: 2 },
+        onTopRight: (b) => {
+          ctx.font = `500 10px ${FONT_FAMILY}`;
+          const tw = ctx.measureText(p.name).width + 8;
+          ctx.fillStyle = p.color;
+          ctx.fillRect(b.x + b.w - tw, b.y - 14, tw, 14);
+          ctx.fillStyle = '#FFFFFF';
+          ctx.textBaseline = 'middle';
+          ctx.textAlign = 'left';
+          ctx.fillText(p.name, b.x + b.w - tw + 4, b.y - 7);
+        },
+      });
     }
     const sel = ctrl.selectionRange();
-    const sb = rectOf(sel);
     const a = st.selection.anchor;
     const am = ctrl.mergeAt(a.row, a.col) ?? { r1: a.row, c1: a.col, r2: a.row, c2: a.col };
-    const ab = rectOf(am);
-    if (sel.r1 !== sel.r2 || sel.c1 !== sel.c2) {
-      ctx.fillStyle = t.selFill;
-      ctx.fillRect(sb.x, sb.y, sb.w, sb.h);
-      ctx.strokeStyle = t.brand;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(sb.x + 0.5, sb.y + 0.5, sb.w - 1, sb.h - 1);
-    }
+    if (sel.r1 !== sel.r2 || sel.c1 !== sel.c2) paint(sel, { fill: { color: t.selFill, alpha: 1 }, stroke: { color: t.brand, width: 1 } });
     if (!st.editing) {
-      ctx.strokeStyle = t.brand;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(ab.x + 1, ab.y + 1, ab.w - 2, ab.h - 2);
+      paint(am, { stroke: { color: t.brand, width: 2 } });
       if (st.can.edit) {
-        // The fill handle grows when hovered, so it is clear this corner does something.
+        // The fill handle grows when hovered, so it is clear this corner does something. It is only
+        // drawn where its own pane shows it.
         const hs = overlay.handleHover ? 11 : 7;
         const ho = Math.floor(hs / 2);
-        ctx.fillStyle = t.brand;
-        ctx.fillRect(sb.x + sb.w - ho, sb.y + sb.h - ho, hs, hs);
-        ctx.strokeStyle = t.paper;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(sb.x + sb.w - ho - 0.5, sb.y + sb.h - ho - 0.5, hs + 1, hs + 1);
+        paint(sel, {
+          onBottomRight: (b) => {
+            ctx.fillStyle = t.brand;
+            ctx.fillRect(b.x + b.w - ho, b.y + b.h - ho, hs, hs);
+            ctx.strokeStyle = t.paper;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(b.x + b.w - ho - 0.5, b.y + b.h - ho - 0.5, hs + 1, hs + 1);
+          },
+        });
       }
     }
     // Outline the result area of an array formula when the cursor is inside it.
     const spill = ctrl.model.engine.spillAreaAt(sheet.id, a.row, a.col);
-    if (spill) {
-      const b = rectOf(spill);
-      ctx.setLineDash([3, 3]);
-      ctx.strokeStyle = spill.ok ? t.brand : t.danger;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
-      ctx.setLineDash([]);
-    }
-    if (overlay.fillPreview) {
-      const b = rectOf(overlay.fillPreview);
-      ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = t.ink2;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
-      ctx.setLineDash([]);
-    }
-    if (st.copyRange && st.copyRange.sheetId === sheet.id) {
-      const b = rectOf(st.copyRange);
-      ctx.setLineDash([5, 3]);
-      ctx.strokeStyle = t.brand;
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
-      ctx.setLineDash([]);
-    }
-    ctx.restore();
+    if (spill) paint(spill, { stroke: { color: spill.ok ? t.brand : t.danger, width: 1, dash: [3, 3] } });
+    if (overlay.fillPreview) paint(overlay.fillPreview, { stroke: { color: t.ink2, width: 1, dash: [4, 3] } });
+    if (st.copyRange && st.copyRange.sheetId === sheet.id) paint(st.copyRange, { stroke: { color: t.brand, width: 1.5, dash: [5, 3] } });
 
     // Frozen dividers.
     ctx.fillStyle = t.line2;

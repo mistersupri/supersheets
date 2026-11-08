@@ -168,6 +168,12 @@ export function CellEditor({ rect, viewport, onDone }: { rect: { x: number; y: n
 export function SuggestChips({ row, col, onPick }: { row: number; col: number; onPick: (formula: string) => void }) {
   const ctrl = useCtrl();
   const s = ctrl.suggestFormulas(row, col);
+  // Show on the grid which cells the suggestions would add up.
+  const area = s?.area;
+  useEffect(() => {
+    ctrl.set({ suggestPreview: area ?? null });
+    return () => ctrl.set({ suggestPreview: null });
+  }, [ctrl, area?.r1, area?.c1, area?.r2, area?.c2]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!s) return null;
   return (
     <div role="group" aria-label={`Saran formula untuk ${s.orientation === 'column' ? 'kolom' : 'baris'} ${s.range}`} className="w-72 max-w-[calc(100vw-24px)] rounded-md border border-line bg-surface p-2 shadow-pop">

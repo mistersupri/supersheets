@@ -137,6 +137,8 @@ export interface EditorState {
   tempFilter: { sheetId: string; filter: SheetFilter; name: string; personal?: boolean } | null;
   /** Range being typed in the create-filter dialog, highlighted on the grid. */
   filterPreview: RangeAddress | null;
+  /** Numbers a visible formula suggestion would use, highlighted on the grid. */
+  suggestPreview: RangeAddress | null;
   canUndo: boolean;
   canRedo: boolean;
   findOpenReplace: boolean;
@@ -200,6 +202,7 @@ export class EditorController {
       showFormulas: false,
       tempFilter: null,
       filterPreview: null,
+      suggestPreview: null,
       canUndo: false,
       canRedo: false,
       findOpenReplace: false,
@@ -1479,26 +1482,31 @@ export class EditorController {
    * Formulas worth offering for an empty cell that sits below a column of numbers or
    * to the right of a row of numbers. Columns above win over rows on the left.
    */
-  suggestFormulas(row: number, col: number): { range: string; orientation: 'column' | 'row'; items: { fn: string; formula: string }[] } | null {
+  suggestFormulas(row: number, col: number): { range: string; area: RangeAddress; orientation: 'column' | 'row'; items: { fn: string; formula: string }[] } | null {
     const sid = this.s.activeSheetId;
     if (this.model.raw(sid, row, col) !== '') return null;
     const isNum = (r: number, c: number) => typeof this.model.value(sid, r, c) === 'number';
     let range: string | null = null;
+    let area: RangeAddress = { r1: row, c1: col, r2: row, c2: col };
     let orientation: 'column' | 'row' = 'column';
     let n = 0;
     while (row - 1 - n >= 0 && isNum(row - 1 - n, col)) n++;
-    if (n >= 2) range = `${formatA1(row - n, col)}:${formatA1(row - 1, col)}`;
+    if (n >= 2) {
+      range = `${formatA1(row - n, col)}:${formatA1(row - 1, col)}`;
+      area = { r1: row - n, c1: col, r2: row - 1, c2: col };
+    }
     else {
       n = 0;
       while (col - 1 - n >= 0 && isNum(row, col - 1 - n)) n++;
       if (n >= 2) {
         range = `${formatA1(row, col - n)}:${formatA1(row, col - 1)}`;
         orientation = 'row';
+        area = { r1: row, c1: col - n, r2: row, c2: col - 1 };
       }
     }
     if (!range) return null;
     const items = (['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN'] as const).map((fn) => ({ fn, formula: `=${fn}(${range})` }));
-    return { range, orientation, items };
+    return { range, area, orientation, items };
   }
 
   /** The contiguous block of non-empty cells around (row, col). */
