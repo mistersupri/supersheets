@@ -109,9 +109,28 @@ model Workbook {
   comments    WorkbookComment[]
   stars       WorkbookStar[]
   opens       WorkbookOpen[]
+  feedTokens  FeedToken[]
 
   @@index([ownerId])
   @@map("workbooks")
+}
+
+/// Read-only keys for pulling a workbook's values into other tools (Google Sheets, scripts).
+model FeedToken {
+  id          String    @id @default(uuid()) @db.Uuid
+  workbookId  String    @map("workbook_id") @db.Uuid
+  label       String    @db.VarChar(80)
+  /// SHA-256 of the token; the token itself is shown once and never stored.
+  tokenHash   String    @unique @map("token_hash") @db.VarChar(64)
+  /// First characters, so the owner can tell keys apart in the list.
+  prefix      String    @db.VarChar(12)
+  createdById String    @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at")
+  lastUsedAt  DateTime? @map("last_used_at")
+  workbook    Workbook  @relation(fields: [workbookId], references: [id], onDelete: Cascade)
+
+  @@index([workbookId])
+  @@map("feed_tokens")
 }
 
 model WorkbookStar {

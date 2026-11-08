@@ -30,7 +30,7 @@ Tanpa `SMTP_URL`, email (atur ulang kata sandi, undangan) dicetak ke log server.
 
 ```bash
 pnpm --filter @opensheet/engine test    # 47 test formula engine (termasuk formula array dan spill)
-pnpm --filter @opensheet/server test    # 44 test API terhadap PostgreSQL, SMTP lokal, Google tiruan dan penyimpanan berkas
+pnpm --filter @opensheet/server test    # 45 test API terhadap PostgreSQL, SMTP lokal, Google tiruan dan penyimpanan berkas
 pnpm --filter @opensheet/engine bench   # benchmark engine terhadap target bab 10
 pnpm typecheck
 ```

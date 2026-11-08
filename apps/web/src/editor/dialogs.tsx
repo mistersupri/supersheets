@@ -54,6 +54,7 @@ export function EditorDialogs() {
       <ProtectDialog />
       <ConfirmDialog />
       <ChartDialog />
+      <FeedDialog />
       <RangePickBar />
       <SortDialog />
       <SplitDialog />
@@ -69,6 +70,200 @@ export function EditorDialogs() {
       <MobileFormatSheet />
       <MobileMenuSheet />
     </>
+  );
+}
+
+// ---------- Google Sheets feed ----------
+
+interface FeedKey {
+  id: string;
+  label: string;
+  prefix: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+const copy = async (text: string, what: string) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast.success(`${what} disalin`);
+  } catch {
+    toast.error('Tidak bisa menyalin. Pilih teksnya lalu salin manual.');
+  }
+};
+
+function appsScript(url: string, key: string, sheet: string, range: string) {
+  return `// OpenSheet -> Google Sheets. Tempel di Extensions > Apps Script, jalankan installTrigger() sekali.
+const OPENSHEET = {
+  url: '${url}',
+  key: '${key}',
+  sheet: '${sheet.replace(/'/g, "\\'")}',
+  range: '${range}', // kosong = seluruh sheet
+  target: 'OpenSheet', // nama sheet tujuan di Google Sheets
+};
+
+function syncOpenSheet() {
+  const props = PropertiesService.getScriptProperties();
+  let q = '?format=json&sheet=' + encodeURIComponent(OPENSHEET.sheet);
+  if (OPENSHEET.range) q += '&range=' + encodeURIComponent(OPENSHEET.range);
+  const headers = { Authorization: 'Bearer ' + OPENSHEET.key };
+  const last = props.getProperty('etag');
+  if (last) headers['If-None-Match'] = last; // data tidak berubah: OpenSheet menjawab 304, tidak ada yang ditulis
+  const res = UrlFetchApp.fetch(OPENSHEET.url + q, { headers: headers, muteHttpExceptions: true });
+  const code = res.getResponseCode();
+  if (code === 304) return;
+  if (code !== 200) throw new Error('OpenSheet ' + code + ': ' + res.getContentText());
+  const values = JSON.parse(res.getContentText()).values;
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(OPENSHEET.target) || ss.insertSheet(OPENSHEET.target);
+  sh.clearContents();
+  if (values.length && values[0].length) sh.getRange(1, 1, values.length, values[0].length).setValues(values);
+  const h = res.getAllHeaders();
+  const k = Object.keys(h).find(function (x) { return x.toLowerCase() === 'etag'; });
+  if (k) props.setProperty('etag', h[k]);
+}
+
+function installTrigger() {
+  ScriptApp.newTrigger('syncOpenSheet').timeBased().everyMinutes(1).create();
+  syncOpenSheet();
+}
+`;
+}
+
+function FeedDialog() {
+  const { open, close, ctrl } = useDialog('feed');
+  const qc = useQueryClient();
+  const keys = useQuery({ queryKey: ['feed', ctrl.workbookId], enabled: open, queryFn: () => api.get<{ items: FeedKey[] }>(`/api/workbooks/${ctrl.workbookId}/feed-tokens`) });
+  const [label, setLabel] = useState('Google Sheets');
+  const [fresh, setFresh] = useState<string | null>(null);
+  const [sheet, setSheet] = useState('');
+  const [range, setRange] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setFresh(null);
+      setSheet(ctrl.sheet()?.title ?? '');
+      setRange('');
+    }
+  }, [open, ctrl]);
+  const base = `${window.location.origin}/api/feed/${ctrl.workbookId}`;
+  const key = fresh ?? 'KUNCI_ANDA';
+  const rangeOk = range === '' || !!parseRangeA1(range.toUpperCase());
+  const q = `?token=${key}&sheet=${encodeURIComponent(sheet)}${range ? `&range=${range.toUpperCase()}` : ''}`;
+  const formula = `=IMPORTDATA("${base}${q}")`;
+  const create = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post<{ token: string }>(`/api/workbooks/${ctrl.workbookId}/feed-tokens`, { label: label.trim() || 'Google Sheets' });
+      setFresh(r.token);
+      await qc.invalidateQueries({ queryKey: ['feed', ctrl.workbookId] });
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const revoke = async (id: string) => {
+    try {
+      await api.del(`/api/workbooks/${ctrl.workbookId}/feed-tokens/${id}`);
+      await qc.invalidateQueries({ queryKey: ['feed', ctrl.workbookId] });
+      toast.success('Kunci dicabut. Google Sheets yang memakainya berhenti menerima data.');
+    } catch (e) {
+      toast.error(errorMessage(e));
+    }
+  };
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => !o && close()}
+      title="Hubungkan ke Google Sheets"
+      description="Google Sheets membaca nilai workbook ini lewat kunci baca-saja. Isinya tidak bisa diubah dari sana."
+      width={680}
+      footer={<Button onClick={close}>Tutup</Button>}
+    >
+      <div className="flex flex-col gap-5">
+        <section>
+          <h3 className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium">
+            <Icon.Lock size={14} /> Kunci
+          </h3>
+          <ul className="flex flex-col divide-y divide-line rounded-md border border-line">
+            {(keys.data?.items ?? []).length === 0 && <li className="px-3 py-2 text-xs text-ink-2">Belum ada kunci.</li>}
+            {(keys.data?.items ?? []).map((k) => (
+              <li key={k.id} className="flex items-center gap-3 px-3 py-2 text-[13px]">
+                <span className="min-w-0 flex-1 truncate">
+                  {k.label} <span className="addr text-xs text-ink-2">{k.prefix}…</span>
+                </span>
+                <span className="text-xs text-ink-2">{k.lastUsedAt ? `Terakhir dipakai ${dateTime(k.lastUsedAt)}` : 'Belum dipakai'}</span>
+                <button type="button" aria-label={`Cabut kunci ${k.label}`} title="Cabut kunci" className="press inline-flex size-8 items-center justify-center rounded-md text-danger hover:bg-danger-soft" onClick={() => revoke(k.id)}>
+                  <Icon.Trash size={15} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-2 flex items-end gap-2">
+            <Field label="Nama kunci baru" htmlFor="fd-label">
+              <Input id="fd-label" value={label} maxLength={80} onChange={(e) => setLabel(e.target.value)} />
+            </Field>
+            <Button onClick={create} disabled={busy}>
+              <Icon.Plus /> Buat kunci
+            </Button>
+          </div>
+          {fresh && (
+            <div className="mt-2 rounded-md border border-accent bg-accent-soft p-3">
+              <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-ink">
+                <Icon.Warning size={14} /> Salin sekarang. Kunci ini tidak akan ditampilkan lagi.
+              </p>
+              <div className="flex gap-2">
+                <Input readOnly aria-label="Kunci baru" className="addr" value={fresh} onFocus={(e) => e.target.select()} />
+                <Button onClick={() => copy(fresh, 'Kunci')}>
+                  <Icon.Copy /> Salin
+                </Button>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="grid gap-3 sm:grid-cols-2">
+          <Field label="Sheet yang dibagikan" htmlFor="fd-sheet">
+            <Select id="fd-sheet" value={sheet} onChange={(e) => setSheet(e.target.value)}>
+              {ctrl.model.sheets.map((s) => (
+                <option key={s.id} value={s.title}>
+                  {s.title}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Rentang (opsional)" htmlFor="fd-range" error={rangeOk ? undefined : 'Contoh: A1:D20'}>
+            <RangeInput id="fd-range" value={range} onChange={setRange} />
+          </Field>
+        </section>
+
+        <section>
+          <h3 className="mb-1.5 text-[13px] font-medium">Cara 1: rumus IMPORTDATA</h3>
+          <p className="mb-1.5 text-xs text-ink-2">Paling sederhana. Google menyegarkan IMPORTDATA sekitar tiap satu jam, bukan seketika.</p>
+          <div className="flex gap-2">
+            <Input readOnly aria-label="Rumus IMPORTDATA" className="addr text-xs" value={formula} onFocus={(e) => e.target.select()} />
+            <Button disabled={!rangeOk} onClick={() => copy(formula, 'Rumus')}>
+              <Icon.Copy /> Salin
+            </Button>
+          </div>
+        </section>
+
+        <section>
+          <h3 className="mb-1.5 text-[13px] font-medium">Cara 2: Apps Script, diperbarui tiap menit</h3>
+          <p className="mb-1.5 text-xs text-ink-2">Skrip menanyakan OpenSheet tiap menit dan hanya menulis bila datanya berubah. Ini batas tercepat dari pemicu waktu Google.</p>
+          <textarea readOnly aria-label="Skrip Apps Script" className="addr h-40 w-full resize-y rounded-md border border-line-2 bg-surface-2 p-2 text-xs" value={appsScript(base, key, sheet, range.toUpperCase())} onFocus={(e) => e.target.select()} />
+          <Button className="mt-2" disabled={!rangeOk} onClick={() => copy(appsScript(base, key, sheet, range.toUpperCase()), 'Skrip')}>
+            <Icon.Copy /> Salin skrip
+          </Button>
+        </section>
+
+        <p className="flex gap-2 text-xs text-ink-2">
+          <Icon.Warning size={14} className="mt-0.5 shrink-0" />
+          <span>Server Google harus bisa menjangkau alamat OpenSheet ini dari internet. Siapa pun yang memegang kunci dapat membaca seluruh workbook, jadi jangan dibagikan dan cabut bila bocor.</span>
+        </p>
+      </div>
+    </Dialog>
   );
 }
 

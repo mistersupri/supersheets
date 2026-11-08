@@ -114,6 +114,7 @@ export type DialogName =
   | 'mobileFormat'
   | 'mobileMenu'
   | 'chart'
+  | 'feed'
   | null;
 
 export interface EditorState {

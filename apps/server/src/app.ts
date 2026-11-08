@@ -16,6 +16,7 @@ import { exportRouter, importRouter } from './routes/importexport';
 import { sharingRouter } from './routes/sharing';
 import { workbooksRouter } from './routes/workbooks';
 import { worksheetsRouter } from './routes/worksheets';
+import { feedManageRouter, feedPublicRouter } from './routes/feed';
 import { csrfGuard, loadUser, requireAuth } from './services/auth';
 import { listFunctions } from '@opensheet/engine';
 
@@ -59,6 +60,7 @@ export function createApp() {
   api.get('/health', (_req, res) => {
     res.json({ ok: true });
   });
+  api.use('/feed', feedPublicRouter);
   api.use('/auth', googleRouter);
   api.use('/auth', authRouter);
   // Signed-out visitors may read shared workbooks when the admin allows guests;
@@ -72,6 +74,7 @@ export function createApp() {
   api.use('/workbooks', sharingRouter);
   api.use('/workbooks', historyRouter);
   api.use('/workbooks', exportRouter);
+  api.use('/workbooks', feedManageRouter);
   api.use('/worksheets', worksheetsRouter);
   api.use('/folders', foldersRouter);
   api.use('/import', importRouter);

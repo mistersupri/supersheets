@@ -373,6 +373,53 @@ function displayGrid(s: ExportSheet, engine: Engine): string[][] {
   return grid;
 }
 
+export type FeedValue = string | number | boolean;
+
+/**
+ * Computed values of one sheet for other tools to read. Numbers stay numbers, date-formatted
+ * numbers become ISO text so a spreadsheet parses them as dates, errors keep their code.
+ */
+export async function valueGrid(workbookId: string, sheetTitle: string | undefined, range: { r1: number; c1: number; r2: number; c2: number } | null): Promise<{ title: string; rows: FeedValue[][] } | null> {
+  const row = await prisma.worksheet.findFirst({
+    where: { workbookId, ...(sheetTitle ? { title: { equals: sheetTitle, mode: 'insensitive' } } : {}) },
+    orderBy: { position: 'asc' },
+    select: { id: true },
+  });
+  if (!row) return null;
+  const { sheets, engine } = await loadForExport(workbookId, row.id);
+  const s = sheets[0];
+  let rows = 0;
+  let cols = 0;
+  const spilled = [...engine.spillCells(s.id)];
+  for (const c of [...s.cells, ...spilled]) {
+    rows = Math.max(rows, c.row + 1);
+    cols = Math.max(cols, c.col + 1);
+  }
+  const r = range ?? { r1: 0, c1: 0, r2: Math.max(0, rows - 1), c2: Math.max(0, cols - 1) };
+  // A range reaching past the data is clamped, so "A:Z" does not return a wall of blanks.
+  const r2 = Math.min(r.r2, Math.max(r.r1, rows - 1));
+  const c2 = Math.min(r.c2, Math.max(r.c1, cols - 1));
+  const fmt = new Map<string, string | undefined>();
+  for (const c of s.cells) fmt.set(`${c.row}:${c.col}`, c.style?.numberFormat);
+  const out: FeedValue[][] = [];
+  for (let rr = r.r1; rr <= r2; rr++) {
+    const line: FeedValue[] = [];
+    for (let cc = r.c1; cc <= c2; cc++) {
+      const v = engine.getValue(s.id, rr, cc);
+      if (v === null || v === undefined) line.push('');
+      else if (typeof v === 'number') {
+        if (isDateFormat(fmt.get(`${rr}:${cc}`)) && v >= 0) {
+          const iso = serialToJsDate(v).toISOString();
+          line.push(v % 1 === 0 ? iso.slice(0, 10) : iso.slice(0, 19).replace('T', ' '));
+        } else line.push(v);
+      } else if (typeof v === 'boolean' || typeof v === 'string') line.push(v);
+      else line.push(formatValue(v, null));
+    }
+    out.push(line);
+  }
+  return { title: s.title, rows: out };
+}
+
 export async function exportDelimited(workbookId: string, sheetId: string | undefined, delimiter: ',' | '\t', userId?: string): Promise<{ text: string; title: string }> {
   const { sheets, engine } = await loadForExport(workbookId, sheetId, userId);
   const s = sheets[0];

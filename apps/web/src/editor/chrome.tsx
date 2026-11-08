@@ -291,6 +291,11 @@ export function MenuBar() {
           {!ctrl.guest && <M onClick={() => ctrl.set({ dialog: 'files' })}>Berkas asli impor</M>}
           <MenuSeparator />
           <M icon={<Icon.Share size={15} />} onClick={() => ctrl.set({ dialog: 'share' })}>Bagikan</M>
+          {!ctrl.guest && (
+            <M icon={<Icon.Sheet size={15} />} onClick={() => ctrl.set({ dialog: 'feed' })} disabled={!can.manage}>
+              Hubungkan ke Google Sheets
+            </M>
+          )}
           <M icon={<Icon.History size={15} />} onClick={() => ctrl.set({ panel: 'history' })}>Riwayat versi</M>
           {can.own && (
             <>

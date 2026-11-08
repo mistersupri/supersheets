@@ -193,6 +193,37 @@ describe('permissions', () => {
     expect((await viewer.patch(`/api/worksheets/${sheetId}`).set(H).send({ metadata: { charts: [] } })).status).toBe(403);
     await owner.patch(`/api/worksheets/${sheetId}`).set(H).send({ metadata: { charts: [] } });
   });
+  it('feed keys give read-only access to values for other tools', async () => {
+    expect((await editor.post(`/api/workbooks/${workbookId}/feed-tokens`).set(H).send({ label: 'x' })).status).toBe(403);
+    const made = await owner.post(`/api/workbooks/${workbookId}/feed-tokens`).set(H).send({ label: 'Google Sheets' });
+    expect(made.status).toBe(201);
+    const token: string = made.body.token;
+    expect(token.startsWith('osf_')).toBe(true);
+    // The list never shows the key itself.
+    const list = await owner.get(`/api/workbooks/${workbookId}/feed-tokens`);
+    expect(JSON.stringify(list.body)).not.toContain(token);
+    // No session needed: a bare client with the key reads CSV, by header or by query.
+    const bare = request(app);
+    const byHeader = await bare.get(`/api/feed/${workbookId}`).set('Authorization', `Bearer ${token}`);
+    expect(byHeader.status).toBe(200);
+    expect(byHeader.headers['content-type']).toContain('text/csv');
+    expect(byHeader.text.length).toBeGreaterThan(0);
+    const byQuery = await bare.get(`/api/feed/${workbookId}?token=${token}&format=json&range=A1:B2`);
+    expect(byQuery.status).toBe(200);
+    expect(byQuery.body.values.length).toBeLessThanOrEqual(2);
+    expect(byQuery.body.values[0].length).toBeLessThanOrEqual(2);
+    // Unchanged data answers 304 for a caller that sends the ETag back.
+    const etag = byQuery.headers.etag;
+    expect((await bare.get(`/api/feed/${workbookId}?token=${token}&format=json&range=A1:B2`).set('If-None-Match', etag)).status).toBe(304);
+    // Wrong key, missing key, bad range and a key used on another workbook are all refused.
+    expect((await bare.get(`/api/feed/${workbookId}?token=osf_nope`)).status).toBe(401);
+    expect((await bare.get(`/api/feed/${workbookId}`)).status).toBe(401);
+    expect((await bare.get(`/api/feed/${workbookId}?token=${token}&range=zz`)).status).toBe(400);
+    expect((await bare.get(`/api/feed/00000000-0000-4000-8000-000000000000?token=${token}`)).status).toBe(401);
+    // Revoking stops it at once.
+    expect((await owner.delete(`/api/workbooks/${workbookId}/feed-tokens/${made.body.item.id}`).set(H)).status).toBe(200);
+    expect((await bare.get(`/api/feed/${workbookId}`).set('Authorization', `Bearer ${token}`)).status).toBe(401);
+  });
   it('revoking access removes it', async () => {
     const list = await owner.get(`/api/workbooks/${workbookId}/permissions`);
     const p = list.body.permissions.find((x: { user: { email: string } }) => x.user.email === 'citra@example.test');
