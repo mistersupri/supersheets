@@ -19,3 +19,7 @@ Sumber arah: PRD bagian 5.1 (modern, minimalis, profesional, bersih, responsif, 
 | Pewarnaan formula di formula bar dan editor sel | Warna referensi mengikuti urutan dan warna kotak referensi di grid, jadi mata bisa mencocokkan teks dengan sel yang dirujuk. Fungsi tebal, teks berwarna aksen, angka abu. |
 | Garis putus-putus di sekitar hasil array | Menunjukkan area yang diisi satu formula (FILTER, SORT, QUERY, ...). Hijau bila tampil, merah bila terhalang data. |
 | Tinggi baris otomatis | Baris tanpa tinggi manual tumbuh mengikuti teks terbungkus dan huruf besar, sehingga isi tidak terpotong. |
+| Ikon dari lucide-react (permintaan produk) | Mengganti set ikon buatan sendiri. Satu pemetaan nama aksi ke ikon di `components/icons.tsx`, jadi pemanggil membaca `Icon.Merge`, bukan nama glyph. Teks dikurangi di navigasi, menu, dan filter dengan ikon pendamping. |
+| Dasbor default berupa kisi dengan thumbnail | Isi sheet lebih cepat dikenali daripada judul "Spreadsheet tanpa judul". Thumbnail adalah SVG yang digambar server dari nilai sel, di-cache per revisi. |
+| Filter pribadi memakai aksen bata putus-putus, filter bersama hijau solid | Perbedaan siapa yang terpengaruh harus terlihat tanpa membaca teks. |
+| Kekuatan sandi: batang empat segmen, label, saran satu kalimat, daftar syarat | Warna tidak berdiri sendiri; label dan daftar tetap terbaca bagi yang tidak membedakan warna. |

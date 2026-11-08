@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs';
 import { simpleParser } from 'mailparser';
 import { SMTPServer } from 'smtp-server';
+import http from 'node:http';
 import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app';
@@ -477,5 +478,148 @@ describe('email', () => {
     const mail = mails.slice(before).find((m) => m.to === 'baru@example.test');
     expect(mail?.text).toContain('Mohon dicek');
     expect(mail?.text).toContain(`/w/${id}`);
+  });
+});
+
+describe('thumbnail', () => {
+  it('draws values, escapes text, answers 304 when unchanged, and needs access', async () => {
+    const id = (await owner.post('/api/workbooks').set(H).send({ title: 'Mini' })).body.id;
+    const sh = (await owner.get(`/api/workbooks/${id}`)).body.sheets[0].id;
+    await owner.post(`/api/worksheets/${sh}/cells/batch`).set(H).send({
+      baseRevision: 0,
+      clientId: 'client-th',
+      ops: [
+        { sheetId: sh, row: 0, col: 0, raw: '<script>alert(1)</script>', style: { bold: true, backgroundColor: '#D9EAD3' } },
+        { sheetId: sh, row: 1, col: 0, raw: '1500', style: { numberFormat: 'currency' } },
+        { sheetId: sh, row: 2, col: 0, raw: '=A2*2', value: 3000 },
+      ],
+    });
+    const r = await owner.get(`/api/workbooks/${id}/thumbnail`).buffer(true).parse((res, cb) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => cb(null, Buffer.concat(chunks).toString('utf8')));
+    });
+    const svg = r.body as string;
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toMatch(/image\/svg\+xml/);
+    expect(svg).not.toContain('<script>');
+    expect(svg).toContain('&lt;script&gt;');
+    expect(svg).toContain('Rp1,500');
+    expect(svg).toContain('3000'); // formula result
+    expect(svg).toContain('#D9EAD3');
+    const again = await owner.get(`/api/workbooks/${id}/thumbnail`).set('If-None-Match', r.headers.etag);
+    expect(again.status).toBe(304);
+    const outsider = agent();
+    await register(outsider, 'Orang Luar', 'luar@example.test');
+    expect((await outsider.get(`/api/workbooks/${id}/thumbnail`)).status).toBe(404);
+  });
+});
+
+// A stand-in for Google: the token endpoint checks the PKCE verifier and client secret,
+// and the profile returned depends on the code that was exchanged.
+const googleProfiles: Record<string, Record<string, unknown>> = {
+  'code-new': { sub: 'g-111', email: 'Baru.Google@example.test', email_verified: true, name: 'Gita Google' },
+  'code-unverified': { sub: 'g-222', email: 'palsu@example.test', email_verified: false, name: 'Palsu' },
+  'code-existing': { sub: 'g-333', email: 'citra@example.test', email_verified: true, name: 'Citra Dewi' },
+};
+let lastChallenge = '';
+const googleMock = http.createServer((req, res) => {
+  if (req.url?.startsWith('/token')) {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const p = new URLSearchParams(body);
+      const crypto = require('node:crypto') as typeof import('node:crypto');
+      const challenge = crypto.createHash('sha256').update(p.get('code_verifier') ?? '').digest('base64url');
+      if (p.get('client_secret') !== 'test-secret' || challenge !== lastChallenge || !googleProfiles[p.get('code') ?? '']) {
+        res.writeHead(400).end('{"error":"invalid_grant"}');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ access_token: `at-${p.get('code')}` }));
+    });
+    return;
+  }
+  if (req.url?.startsWith('/userinfo')) {
+    const profile = googleProfiles[(req.headers.authorization ?? '').replace('Bearer at-', '')];
+    res.writeHead(profile ? 200 : 401, { 'content-type': 'application/json' }).end(JSON.stringify(profile ?? {}));
+    return;
+  }
+  res.writeHead(404).end();
+});
+
+describe('sign in with Google', () => {
+  beforeAll(async () => {
+    await new Promise<void>((r) => googleMock.listen(2527, '127.0.0.1', r));
+  });
+
+  async function start(a: Agent, next = '/w/abc') {
+    const r = await a.get('/api/auth/google').query({ next });
+    expect(r.status).toBe(302);
+    const loc = new URL(r.headers.location);
+    expect(loc.origin + loc.pathname).toBe('http://127.0.0.1:2527/auth');
+    expect(loc.searchParams.get('client_id')).toBe('test-client');
+    expect(loc.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(loc.searchParams.get('redirect_uri')).toBe('http://localhost:5173/api/auth/google/callback');
+    lastChallenge = loc.searchParams.get('code_challenge')!;
+    return loc.searchParams.get('state')!;
+  }
+
+  it('advertises Google when configured', async () => {
+    expect((await agent().get('/api/auth/config')).body.googleEnabled).toBe(true);
+  });
+  it('creates an account, signs in and returns to the requested page', async () => {
+    const a = agent();
+    const state = await start(a);
+    const cb = await a.get('/api/auth/google/callback').query({ code: 'code-new', state });
+    expect(cb.status).toBe(302);
+    expect(cb.headers.location).toBe('http://localhost:5173/w/abc');
+    const me = await a.get('/api/auth/me');
+    expect(me.body.user).toMatchObject({ name: 'Gita Google', email: 'baru.google@example.test', role: 'user' });
+    // The same Google account signs back in to the same user.
+    const again = agent();
+    const s2 = await start(again);
+    await again.get('/api/auth/google/callback').query({ code: 'code-new', state: s2 });
+    expect((await again.get('/api/auth/me')).body.user.id).toBe(me.body.user.id);
+  });
+  it('refuses a wrong state, a missing cookie and an unverified email', async () => {
+    const a = agent();
+    await start(a);
+    const bad = await a.get('/api/auth/google/callback').query({ code: 'code-new', state: 'bukan-state' });
+    expect(bad.headers.location).toContain('/login?error=google_state');
+    expect((await a.get('/api/auth/me')).body.user).toBeNull();
+    const noCookie = await agent().get('/api/auth/google/callback').query({ code: 'code-new', state: 'x' });
+    expect(noCookie.headers.location).toContain('error=google_state');
+    const b = agent();
+    const state = await start(b);
+    const unv = await b.get('/api/auth/google/callback').query({ code: 'code-unverified', state });
+    expect(unv.headers.location).toContain('error=google_unverified');
+    const c = agent();
+    const s3 = await start(c);
+    const denied = await c.get('/api/auth/google/callback').query({ error: 'access_denied', state: s3 });
+    expect(denied.headers.location).toContain('error=google_denied');
+  });
+  it('rejects a code exchanged without the matching PKCE verifier', async () => {
+    const a = agent();
+    const state = await start(a);
+    lastChallenge = 'tidak-cocok';
+    const r = await a.get('/api/auth/google/callback').query({ code: 'code-new', state });
+    expect(r.headers.location).toContain('error=google_failed');
+  });
+  it('links an existing password account and retires its old password and sessions', async () => {
+    const pwSession = agent();
+    expect((await pwSession.post('/api/auth/login').set(H).send({ email: 'citra@example.test', password: 'sandi-baru-123' })).status).toBe(200);
+    const a = agent();
+    const state = await start(a, '/');
+    const cb = await a.get('/api/auth/google/callback').query({ code: 'code-existing', state });
+    expect(cb.headers.location).toBe('http://localhost:5173/');
+    expect((await a.get('/api/auth/me')).body.user.email).toBe('citra@example.test');
+    expect((await pwSession.get('/api/auth/me')).body.user).toBeNull(); // old session ended
+    expect((await agent().post('/api/auth/login').set(H).send({ email: 'citra@example.test', password: 'sandi-baru-123' })).status).toBe(401);
+  });
+  it('does not allow open redirects through next', async () => {
+    const a = agent();
+    const state = await start(a, '//evil.example/steal');
+    const cb = await a.get('/api/auth/google/callback').query({ code: 'code-new', state });
+    expect(cb.headers.location).toBe('http://localhost:5173/');
   });
 });

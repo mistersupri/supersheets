@@ -15,6 +15,7 @@ model User {
   passwordHash     String    @map("password_hash")
   role             String    @default("user") @db.VarChar(20) // super_admin | user
   avatar           String?
+  googleId         String?   @unique @map("google_id") @db.VarChar(64)
   isActive         Boolean   @default(true) @map("is_active")
   failedLoginCount Int       @default(0) @map("failed_login_count")
   lockedUntil      DateTime? @map("locked_until")

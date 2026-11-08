@@ -10,6 +10,7 @@ import { sendMail } from '../lib/mail';
 import { getSettings } from '../lib/settings';
 import { ipKey, limiter } from '../lib/limits';
 import {
+  acceptInvitations,
   checkLock,
   createSession,
   destroySession,
@@ -63,17 +64,7 @@ authRouter.post(
     const user = await prisma.user.create({
       data: { name: body.name, email: body.email, passwordHash: await hashPassword(body.password), role: count === 0 ? 'super_admin' : 'user' },
     });
-    // Accept pending invitations sent to this address.
-    const invites = await prisma.workbookInvitation.findMany({ where: { email: body.email, acceptedAt: null } });
-    for (const inv of invites) {
-      await prisma.workbookPermission.upsert({
-        where: { workbookId_userId: { workbookId: inv.workbookId, userId: user.id } },
-        create: { workbookId: inv.workbookId, userId: user.id, permission: inv.permission },
-        update: {},
-      });
-      await prisma.workbookInvitation.update({ where: { id: inv.id }, data: { acceptedAt: new Date() } });
-      invalidate('workbook', inv.workbookId);
-    }
+    await acceptInvitations(user);
     await createSession(res, req, user.id, false);
     await audit(req, 'auth.register', { type: 'user', id: user.id }, undefined, user.id);
     res.status(201).json({ user: publicUser(user) });
@@ -133,7 +124,7 @@ authRouter.get(
   h(async (_req, res) => {
     const settings = await getSettings();
     const hasUsers = (await prisma.user.count()) > 0;
-    res.json({ registrationEnabled: settings.registrationEnabled || !hasUsers });
+    res.json({ registrationEnabled: settings.registrationEnabled || !hasUsers, googleEnabled: !!config.google.clientId && !!config.google.clientSecret });
   }),
 );
 

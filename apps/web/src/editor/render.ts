@@ -52,6 +52,10 @@ export interface View {
 export interface Overlay {
   fillPreview?: RangeAddress | null;
   resizeGuide?: { axis: 'row' | 'col'; pos: number } | null;
+  /** The header border under the pointer (it can be dragged to resize). */
+  hoverEdge?: { axis: 'row' | 'col'; pos: number } | null;
+  /** The pointer is over the fill handle in the corner of the selection. */
+  handleHover?: boolean;
   /** Ranges referenced by the formula being typed; `index` picks the theme colour. */
   refHighlights?: { range: RangeAddress; index: number }[];
   presenceColors: Record<string, { color: string; name: string }>;
@@ -167,6 +171,36 @@ export class Renderer {
       return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
     };
     const st = ctrl.s;
+    // The range a filter covers: header row tinted, whole range outlined. Shared filters use the
+    // brand colour; a filter only this user sees uses the accent, so the difference is visible.
+    const flt = ctrl.activeFilter();
+    if (flt && flt.c2 >= flt.c1) {
+      const shared = ctrl.filterIsShared();
+      const color = shared ? t.brand : t.accent;
+      const body = rectOf(flt);
+      const head = rectOf({ r1: flt.r1, r2: flt.r1, c1: flt.c1, c2: flt.c2 });
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = color;
+      ctx.fillRect(head.x, head.y, head.w, head.h);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash(shared ? [] : [6, 3]);
+      ctx.strokeRect(body.x + 0.75, body.y + 0.75, body.w - 1.5, body.h - 1.5);
+      ctx.setLineDash([]);
+    }
+    if (st.filterPreview) {
+      const b = rectOf(st.filterPreview);
+      ctx.globalAlpha = 0.1;
+      ctx.fillStyle = t.brand;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = t.brand;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 3]);
+      ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
+      ctx.setLineDash([]);
+    }
     for (const h of overlay.refHighlights ?? []) {
       const b = rectOf(h.range);
       const color = t.refs[h.index % t.refs.length];
@@ -213,11 +247,14 @@ export class Renderer {
       ctx.lineWidth = 2;
       ctx.strokeRect(ab.x + 1, ab.y + 1, ab.w - 2, ab.h - 2);
       if (st.can.edit) {
+        // The fill handle grows when hovered, so it is clear this corner does something.
+        const hs = overlay.handleHover ? 11 : 7;
+        const ho = Math.floor(hs / 2);
         ctx.fillStyle = t.brand;
-        ctx.fillRect(sb.x + sb.w - 4, sb.y + sb.h - 4, 7, 7);
+        ctx.fillRect(sb.x + sb.w - ho, sb.y + sb.h - ho, hs, hs);
         ctx.strokeStyle = t.paper;
         ctx.lineWidth = 1;
-        ctx.strokeRect(sb.x + sb.w - 4.5, sb.y + sb.h - 4.5, 8, 8);
+        ctx.strokeRect(sb.x + sb.w - ho - 0.5, sb.y + sb.h - ho - 0.5, hs + 1, hs + 1);
       }
     }
     // Outline the result area of an array formula when the cursor is inside it.
@@ -255,6 +292,21 @@ export class Renderer {
 
     this.drawHeaders(ctx, t, view, [...visCols, ...scrollCols], [...frozenRows, ...scrollRows], colX, rowY, rows.size.bind(rows), cols.size.bind(cols), sel, fw, fh);
 
+    if (overlay.hoverEdge && !overlay.resizeGuide) {
+      const e = overlay.hoverEdge;
+      ctx.fillStyle = t.brand;
+      // A thick bar in the header, and a faint line through the grid to show what will move.
+      if (e.axis === 'col') {
+        ctx.fillRect(e.pos - 1.5, 0, 3, HEADER_H);
+        ctx.globalAlpha = 0.35;
+        ctx.fillRect(e.pos - 0.5, HEADER_H, 1, view.h);
+      } else {
+        ctx.fillRect(0, e.pos - 1.5, HEADER_W, 3);
+        ctx.globalAlpha = 0.35;
+        ctx.fillRect(HEADER_W, e.pos - 0.5, view.w, 1);
+      }
+      ctx.globalAlpha = 1;
+    }
     if (overlay.resizeGuide) {
       ctx.fillStyle = t.brand;
       if (overlay.resizeGuide.axis === 'col') ctx.fillRect(overlay.resizeGuide.pos - 1, 0, 2, view.h);

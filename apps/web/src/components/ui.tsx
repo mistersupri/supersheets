@@ -195,9 +195,10 @@ export const menuPopupClass =
 export const menuItemClass =
   'flex min-h-8 cursor-default items-center gap-3 px-3 py-1.5 outline-none select-none data-highlighted:bg-brand-soft data-disabled:opacity-45 max-md:min-h-11';
 
-export function MenuItem({ children, shortcut, onClick, disabled, danger }: { children: ReactNode; shortcut?: string; onClick?: () => void; disabled?: boolean; danger?: boolean }) {
+export function MenuItem({ children, shortcut, onClick, disabled, danger, icon }: { children: ReactNode; shortcut?: string; onClick?: () => void; disabled?: boolean; danger?: boolean; icon?: ReactNode }) {
   return (
     <BMenu.Item className={clsx(menuItemClass, danger && 'text-danger')} onClick={onClick} disabled={disabled}>
+      {icon !== undefined && <span className="flex w-4 shrink-0 justify-center text-ink-2">{icon}</span>}
       <span className="flex-1">{children}</span>
       {shortcut && <span className="addr text-xs text-ink-2">{shortcut}</span>}
     </BMenu.Item>
@@ -208,10 +209,11 @@ export function MenuSeparator() {
   return <BMenu.Separator className="my-1 h-px bg-line" />;
 }
 
-export function SubMenu({ label, children, disabled }: { label: string; children: ReactNode; disabled?: boolean }) {
+export function SubMenu({ label, children, disabled, icon }: { label: string; children: ReactNode; disabled?: boolean; icon?: ReactNode }) {
   return (
     <BMenu.SubmenuRoot>
       <BMenu.SubmenuTrigger className={clsx(menuItemClass, 'data-popup-open:bg-brand-soft')} disabled={disabled}>
+        {icon !== undefined && <span className="flex w-4 shrink-0 justify-center text-ink-2">{icon}</span>}
         <span className="flex-1">{label}</span>
         <Icon.ChevronRight size={14} />
       </BMenu.SubmenuTrigger>

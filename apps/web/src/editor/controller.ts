@@ -106,6 +106,7 @@ export type DialogName =
   | 'import'
   | 'files'
   | 'filterViews'
+  | 'createFilter'
   | 'mobileFormula'
   | 'mobileFormat'
   | 'mobileMenu'
@@ -132,13 +133,18 @@ export interface EditorState {
   users: Record<string, string>;
   version: number;
   showFormulas: boolean;
-  tempFilter: { sheetId: string; filter: SheetFilter; name: string } | null;
+  /** A filter only this user sees: a saved filter view, or one made with "Hanya untuk saya". */
+  tempFilter: { sheetId: string; filter: SheetFilter; name: string; personal?: boolean } | null;
+  /** Range being typed in the create-filter dialog, highlighted on the grid. */
+  filterPreview: RangeAddress | null;
   canUndo: boolean;
   canRedo: boolean;
   findOpenReplace: boolean;
   extraRows: number;
   extraCols: number;
   lastEditedAt: string | null;
+  /** What the last right click landed on, so the context menu can show the right actions. */
+  contextKind: 'cell' | 'col' | 'row';
 }
 
 const NO_CAPS: Caps = { view: false, comment: false, edit: false, share: false, manage: false, own: false };
@@ -193,12 +199,14 @@ export class EditorController {
       version: 0,
       showFormulas: false,
       tempFilter: null,
+      filterPreview: null,
       canUndo: false,
       canRedo: false,
       findOpenReplace: false,
       extraRows: 0,
       extraCols: 0,
       lastEditedAt: null,
+      contextKind: 'cell',
     }));
     this.model.subscribe(() => this.set({ version: this.model.version }));
   }
@@ -237,6 +245,7 @@ export class EditorController {
       this.sync = new SyncManager(this.workbookId, () => this.s.activeSheetId, this.syncCallbacks());
       this.sync.revision = cells.revision;
       this.sync.connect();
+      this.loadPersonalFilter(first.id);
       void this.loadComments();
       const rangeParam = hash.get('range');
       if (rangeParam) {
@@ -428,7 +437,7 @@ export class EditorController {
     const hiddenFilter = this.filteredRows();
     const rowCount = this.rowCount();
     const colCount = this.colCount();
-    const key = `${sheet.id}|${rowCount}|${colCount}|${this.s.tempFilter ? 't' : ''}`;
+    const key = `${sheet.id}|${rowCount}|${colCount}|${JSON.stringify(this.activeFilter() ?? null)}`;
     const cached = this.axisCache.get(sheet.id);
     if (cached && cached.version === this.model.version && cached.key === key) return cached;
     const md = sheet.metadata;
@@ -559,8 +568,11 @@ export class EditorController {
     const clamp = (p: { row: number; col: number }) => ({ row: Math.max(0, Math.min(1_048_575, p.row)), col: Math.max(0, Math.min(16_383, p.col)) });
     const a = clamp(anchor);
     const f = clamp(focus);
-    const extraRows = Math.max(this.s.extraRows, Math.max(a.row, f.row) + 50 - Math.max(BASE_ROWS, this.model.usedSize(this.s.activeSheetId).rows + 100));
-    const extraCols = Math.max(this.s.extraCols, Math.max(a.col, f.col) + 5 - Math.max(BASE_COLS, this.model.usedSize(this.s.activeSheetId).cols + 4));
+    // Selecting a whole column or row (or everything) must not add rows or columns to the grid.
+    const wholeCol = Math.min(a.row, f.row) === 0 && Math.max(a.row, f.row) >= this.rowCount() - 1;
+    const wholeRow = Math.min(a.col, f.col) === 0 && Math.max(a.col, f.col) >= this.colCount() - 1;
+    const extraRows = wholeCol ? this.s.extraRows : Math.max(this.s.extraRows, Math.max(a.row, f.row) + 50 - Math.max(BASE_ROWS, this.model.usedSize(this.s.activeSheetId).rows + 100));
+    const extraCols = wholeRow ? this.s.extraCols : Math.max(this.s.extraCols, Math.max(a.col, f.col) + 5 - Math.max(BASE_COLS, this.model.usedSize(this.s.activeSheetId).cols + 4));
     this.set({ selection: { anchor: a, focus: f }, extraRows: Math.max(0, extraRows), extraCols: Math.max(0, extraCols) });
     const r = this.selectionRange();
     this.sync?.sendSelection(this.s.activeSheetId, r);
@@ -618,6 +630,7 @@ export class EditorController {
   setActiveSheet(id: string | undefined) {
     if (!id || !this.model.sheet(id)) return;
     if (this.s.editing) this.commitEdit('none');
+    this.loadPersonalFilter(id);
     this.set({ activeSheetId: id, selection: { anchor: { row: 0, col: 0 }, focus: { row: 0, col: 0 } }, copyRange: null, extraRows: 0, extraCols: 0 });
     history.replaceState(null, '', `#gid=${id}`);
   }
@@ -1388,19 +1401,104 @@ export class EditorController {
     this.sortRange(r, this.s.selection.anchor.col, asc, false);
   }
 
+  /** Toolbar and menu entry: removes the active filter, or opens the dialog to create one. */
   createFilter() {
+    if (this.activeFilter()) return this.removeFilter();
+    this.set({ dialog: 'createFilter' });
+  }
+
+  /** A sensible default range for a new filter: the selection, or the data block around the cell. */
+  defaultFilterRange(): RangeAddress {
     const sheet = this.sheet()!;
-    if (sheet.metadata.filter) {
-      this.patchSheet(sheet.id, { metadata: { filter: null } }, 'Hapus filter');
-      return;
-    }
     let r = this.selectionRange();
     if (r.r1 === r.r2 && r.c1 === r.c2) r = this.dataRegion(r.r1, r.c1);
     if (r.r1 === r.r2) {
       const used = this.model.usedSize(sheet.id);
       r = { r1: r.r1, c1: r.c1, r2: Math.max(used.rows - 1, r.r1 + 1), c2: r.c2 };
     }
-    this.patchSheet(sheet.id, { metadata: { filter: { ...r, criteria: {} } } }, 'Buat filter');
+    return r;
+  }
+
+  /** Creates a filter over `range`. `shared` filters change what everyone sees; the rest only affect this user. */
+  createFilterOn(range: RangeAddress, shared: boolean) {
+    const sheet = this.sheet()!;
+    const filter: SheetFilter = { ...range, criteria: {} };
+    if (shared) {
+      if (!this.s.can.edit) return void toast.message('Hanya editor yang dapat membuat filter untuk semua orang.');
+      this.setPersonalFilter(null);
+      this.patchSheet(sheet.id, { metadata: { filter } }, 'Buat filter');
+    } else {
+      this.setPersonalFilter({ sheetId: sheet.id, filter, name: 'Filter saya', personal: true });
+    }
+  }
+
+  removeFilter() {
+    const sheet = this.sheet()!;
+    const t = this.s.tempFilter;
+    if (t && t.sheetId === sheet.id) {
+      this.setPersonalFilter(null);
+      return;
+    }
+    if (sheet.metadata.filter) this.patchSheet(sheet.id, { metadata: { filter: null } }, 'Hapus filter');
+  }
+
+  /** Whether the filter in effect for this user is shared with everyone. */
+  filterIsShared(): boolean {
+    const t = this.s.tempFilter;
+    return !(t && t.sheetId === this.s.activeSheetId) && !!this.sheet()?.metadata.filter;
+  }
+
+  private personalKey(sheetId: string) {
+    return `opensheet-filter:${this.workbookId}:${sheetId}`;
+  }
+
+  /** Personal filters live in this browser, so they survive a reload and never reach other users. */
+  setPersonalFilter(t: EditorState['tempFilter']) {
+    this.set({ tempFilter: t });
+    const sid = t?.sheetId ?? this.s.activeSheetId;
+    try {
+      if (t?.personal) localStorage.setItem(this.personalKey(sid), JSON.stringify({ filter: t.filter, name: t.name }));
+      else if (!t) localStorage.removeItem(this.personalKey(sid));
+    } catch {
+      /* private mode: the filter still works until the page closes */
+    }
+  }
+
+  loadPersonalFilter(sheetId: string) {
+    try {
+      const raw = localStorage.getItem(this.personalKey(sheetId));
+      if (!raw) return;
+      const { filter, name } = JSON.parse(raw) as { filter: SheetFilter; name: string };
+      if (filter && typeof filter.r1 === 'number') this.set({ tempFilter: { sheetId, filter, name, personal: true } });
+    } catch {
+      /* ignore a corrupt entry */
+    }
+  }
+
+  /**
+   * Formulas worth offering for an empty cell that sits below a column of numbers or
+   * to the right of a row of numbers. Columns above win over rows on the left.
+   */
+  suggestFormulas(row: number, col: number): { range: string; orientation: 'column' | 'row'; items: { fn: string; formula: string }[] } | null {
+    const sid = this.s.activeSheetId;
+    if (this.model.raw(sid, row, col) !== '') return null;
+    const isNum = (r: number, c: number) => typeof this.model.value(sid, r, c) === 'number';
+    let range: string | null = null;
+    let orientation: 'column' | 'row' = 'column';
+    let n = 0;
+    while (row - 1 - n >= 0 && isNum(row - 1 - n, col)) n++;
+    if (n >= 2) range = `${formatA1(row - n, col)}:${formatA1(row - 1, col)}`;
+    else {
+      n = 0;
+      while (col - 1 - n >= 0 && isNum(row, col - 1 - n)) n++;
+      if (n >= 2) {
+        range = `${formatA1(row, col - n)}:${formatA1(row, col - 1)}`;
+        orientation = 'row';
+      }
+    }
+    if (!range) return null;
+    const items = (['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN'] as const).map((fn) => ({ fn, formula: `=${fn}(${range})` }));
+    return { range, orientation, items };
   }
 
   /** The contiguous block of non-empty cells around (row, col). */
@@ -1429,7 +1527,7 @@ export class EditorController {
       const criteria = { ...t.filter.criteria };
       if (criterion) criteria[col] = criterion;
       else delete criteria[col];
-      this.set({ tempFilter: { ...t, filter: { ...t.filter, criteria } } });
+      this.setPersonalFilter({ ...t, filter: { ...t.filter, criteria } });
       return;
     }
     const f = sheet.metadata.filter;
@@ -1475,7 +1573,7 @@ export class EditorController {
 
   applyFilterView(id: string | null) {
     const sheet = this.sheet()!;
-    if (!id) return this.set({ tempFilter: null });
+    if (!id) return this.setPersonalFilter(null);
     const v = sheet.metadata.filterViews?.find((x) => x.id === id);
     if (v) this.set({ tempFilter: { sheetId: sheet.id, filter: structuredClone(v.filter), name: v.name } });
   }
@@ -1483,7 +1581,7 @@ export class EditorController {
   deleteFilterView(id: string) {
     const sheet = this.sheet()!;
     this.patchSheet(sheet.id, { metadata: { filterViews: (sheet.metadata.filterViews ?? []).filter((v) => v.id !== id) } }, 'Hapus tampilan filter');
-    if (this.s.tempFilter) this.set({ tempFilter: null });
+    if (this.s.tempFilter && !this.s.tempFilter.personal) this.set({ tempFilter: null });
   }
 
   removeDuplicates(r: RangeAddress, cols: number[], hasHeader: boolean): number {

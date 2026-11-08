@@ -23,6 +23,14 @@ export const config = {
   webDist: process.env.WEB_DIST ?? '',
   /** Set behind a reverse proxy so req.ip and secure cookies work. */
   trustProxy: process.env.TRUST_PROXY === '1',
+  /** Sign in with Google (OpenID Connect). Both values come from Google Cloud Console. */
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID ?? '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+    authUrl: process.env.GOOGLE_AUTH_URL ?? 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: process.env.GOOGLE_TOKEN_URL ?? 'https://oauth2.googleapis.com/token',
+    userinfoUrl: process.env.GOOGLE_USERINFO_URL ?? 'https://openidconnect.googleapis.com/v1/userinfo',
+  },
   /** Where original uploads are kept: "local" (STORAGE_DIR) or "s3". "none" keeps nothing. */
   storage: (process.env.STORAGE ?? 'local') as 'local' | 's3' | 'none',
   storageDir: process.env.STORAGE_DIR ?? './data/uploads',

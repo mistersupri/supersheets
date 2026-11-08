@@ -11,6 +11,7 @@ import { authRouter } from './routes/auth';
 import { commentsRouter } from './routes/comments';
 import { foldersRouter } from './routes/folders';
 import { historyRouter } from './routes/history';
+import { googleRouter } from './routes/google';
 import { exportRouter, importRouter } from './routes/importexport';
 import { sharingRouter } from './routes/sharing';
 import { workbooksRouter } from './routes/workbooks';
@@ -58,6 +59,7 @@ export function createApp() {
   api.get('/health', (_req, res) => {
     res.json({ ok: true });
   });
+  api.use('/auth', googleRouter);
   api.use('/auth', authRouter);
   // Signed-out visitors may read shared workbooks when the admin allows guests;
   // each handler still checks the workbook's link setting.

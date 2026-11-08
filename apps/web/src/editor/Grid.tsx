@@ -1,4 +1,6 @@
 import { ContextMenu } from '@base-ui/react/context-menu';
+import clsx from 'clsx';
+import { Icon } from '../components/icons';
 import { formatA1, parseRangeA1, RangeAddress } from '@opensheet/engine';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -20,6 +22,10 @@ type Drag =
   | { kind: 'point'; anchor: { row: number; col: number }; pointerId: number; insertAt: number; insertLen: number }
   | { kind: 'open'; run: () => void; pointerId: number };
 
+/** Pixels around a header border that grab it for resizing, and around the fill handle. */
+const EDGE = 6;
+const HANDLE = 8;
+
 export function Grid() {
   const ctrl = useCtrl();
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -36,6 +42,8 @@ export function Grid() {
   const [listCell, setListCell] = useState<{ row: number; col: number } | null>(null);
   const [filterCol, setFilterCol] = useState<number | null>(null);
   const [cursor, setCursor] = useState('cell');
+  const [hoverEdge, setHoverEdge] = useState<{ axis: 'row' | 'col'; pos: number } | null>(null);
+  const [handleHover, setHandleHover] = useState(false);
   const frame = useRef(0);
 
   const state = useEditor((s) => s);
@@ -86,11 +94,13 @@ export function Grid() {
       rendererRef.current.draw(g, { w, h, scrollLeft: scrollEl.scrollLeft, scrollTop: scrollEl.scrollTop }, themeRef.current, {
         fillPreview,
         resizeGuide,
+        hoverEdge,
+        handleHover,
         refHighlights,
         presenceColors,
       });
     });
-  }, [ctrl, fillPreview, resizeGuide, refHighlights, presenceColors]);
+  }, [ctrl, fillPreview, resizeGuide, hoverEdge, handleHover, refHighlights, presenceColors]);
 
   useEffect(() => {
     draw();
@@ -170,14 +180,14 @@ export function Grid() {
   // ---------- keep the focus cell visible ----------
 
   const ensureVisible = useCallback(
-    (row: number, col: number) => {
+    (row: number | null, col: number | null) => {
       const el = scrollRef.current;
       const sh = ctrl.sheet();
       if (!el || !sh) return;
       const { rows, cols } = ctrl.axes();
       const fw = cols.pos(sh.frozenColumns);
       const fh = rows.pos(sh.frozenRows);
-      if (col >= sh.frozenColumns) {
+      if (col !== null && col >= sh.frozenColumns) {
         const x1 = cols.pos(col);
         const x2 = x1 + cols.size(col);
         const viewL = el.scrollLeft + fw;
@@ -185,7 +195,7 @@ export function Grid() {
         if (x1 < viewL) el.scrollLeft = x1 - fw;
         else if (x2 > viewR) el.scrollLeft = x2 - el.clientWidth + HEADER_W + 2;
       }
-      if (row >= sh.frozenRows) {
+      if (row !== null && row >= sh.frozenRows) {
         const y1 = rows.pos(row);
         const y2 = y1 + rows.size(row);
         const viewT = el.scrollTop + fh;
@@ -198,10 +208,16 @@ export function Grid() {
   );
 
   const focusSel = state.selection.focus;
+  const anchorSel = state.selection.anchor;
   useEffect(() => {
     if (dragRef.current?.kind === 'select') return;
-    ensureVisible(focusSel.row, focusSel.col);
-  }, [focusSel.row, focusSel.col, ensureVisible]);
+    // A whole column (or row) puts the focus at its far end; scrolling there would throw the view away.
+    const { rows, cols } = ctrl.axes();
+    const wholeCol = anchorSel.row === 0 && focusSel.row >= rows.count - 1;
+    const wholeRow = anchorSel.col === 0 && focusSel.col >= cols.count - 1;
+    if (wholeCol && wholeRow) return;
+    ensureVisible(wholeCol ? null : focusSel.row, wholeRow ? null : focusSel.col);
+  }, [focusSel.row, focusSel.col, anchorSel.row, anchorSel.col, ensureVisible, ctrl]);
 
   // ---------- focus management ----------
 
@@ -264,13 +280,25 @@ export function Grid() {
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button === 2) {
-      // Right click selects the cell under the pointer unless it is already selected.
+      // Right click targets what is under the pointer; the selection follows unless it already covers it.
       const { x, y } = local(e);
-      if (x > HEADER_W && y > HEADER_H) {
+      const { rows, cols } = ctrl.axes();
+      const r = ctrl.selectionRange();
+      if (y < HEADER_H && x > HEADER_W) {
+        const col = hitCol(x);
+        const covered = r.r1 === 0 && r.r2 >= rows.count - 1 && col >= r.c1 && col <= r.c2;
+        if (!covered) ctrl.select({ row: 0, col }, { row: rows.count - 1, col });
+        ctrl.set({ contextKind: 'col' });
+      } else if (x < HEADER_W && y > HEADER_H) {
+        const row = hitRow(y);
+        const covered = r.c1 === 0 && r.c2 >= cols.count - 1 && row >= r.r1 && row <= r.r2;
+        if (!covered) ctrl.select({ row, col: 0 }, { row, col: cols.count - 1 });
+        ctrl.set({ contextKind: 'row' });
+      } else if (x > HEADER_W && y > HEADER_H) {
         const row = hitRow(y);
         const col = hitCol(x);
-        const r = ctrl.selectionRange();
         if (!(row >= r.r1 && row <= r.r2 && col >= r.c1 && col <= r.c2)) ctrl.select({ row, col });
+        ctrl.set({ contextKind: 'cell' });
       }
       return;
     }
@@ -293,8 +321,8 @@ export function Grid() {
       const c = hitCol(x);
       const edge = liveColX(c) + cols.size(c);
       const prevEdge = liveColX(c);
-      if (!touch && ctrl.s.can.edit && (Math.abs(x - edge) <= 4 || (Math.abs(x - prevEdge) <= 4 && c > 0))) {
-        const idx = Math.abs(x - edge) <= 4 ? c : cols.nextVisible(c, -1);
+      if (!touch && ctrl.s.can.edit && (Math.abs(x - edge) <= EDGE || (Math.abs(x - prevEdge) <= EDGE && c > 0))) {
+        const idx = Math.abs(x - edge) <= EDGE ? c : cols.nextVisible(c, -1);
         const r = ctrl.selectionRange();
         const indices = r.r1 === 0 && r.r2 >= rows.count - 1 && idx >= r.c1 && idx <= r.c2 ? range(r.c1, r.c2) : [idx];
         dragRef.current = { kind: 'resize', axis: 'col', index: idx, start: x, startSize: cols.size(idx), pointerId: e.pointerId, indices };
@@ -315,8 +343,8 @@ export function Grid() {
       const r = hitRow(y);
       const edge = liveRowY(r) + rows.size(r);
       const prevEdge = liveRowY(r);
-      if (!touch && ctrl.s.can.edit && (Math.abs(y - edge) <= 3 || (Math.abs(y - prevEdge) <= 3 && r > 0))) {
-        const idx = Math.abs(y - edge) <= 3 ? r : rows.nextVisible(r, -1);
+      if (!touch && ctrl.s.can.edit && (Math.abs(y - edge) <= EDGE || (Math.abs(y - prevEdge) <= EDGE && r > 0))) {
+        const idx = Math.abs(y - edge) <= EDGE ? r : rows.nextVisible(r, -1);
         const sel = ctrl.selectionRange();
         const indices = sel.c1 === 0 && sel.c2 >= cols.count - 1 && idx >= sel.r1 && idx <= sel.r2 ? range(sel.r1, sel.r2) : [idx];
         dragRef.current = { kind: 'resize', axis: 'row', index: idx, start: y, startSize: rows.size(idx), pointerId: e.pointerId, indices };
@@ -357,7 +385,7 @@ export function Grid() {
     const sel = ctrl.selectionRange();
     const hx = liveColX(sel.c2) + cols.size(sel.c2);
     const hy = liveRowY(sel.r2) + rows.size(sel.r2);
-    if (ctrl.s.can.edit && !ctrl.s.editing && Math.abs(x - hx) <= 6 && Math.abs(y - hy) <= 6) {
+    if (ctrl.s.can.edit && !ctrl.s.editing && Math.abs(x - hx) <= HANDLE && Math.abs(y - hy) <= HANDLE) {
       dragRef.current = { kind: 'fill', src: sel, pointerId: e.pointerId };
       el.setPointerCapture(e.pointerId);
       return;
@@ -415,25 +443,35 @@ export function Grid() {
     const el = scrollRef.current!;
     const { rows, cols } = ctrl.axes();
     if (!d) {
-      // Hover cursor feedback.
+      // Hover feedback: the cursor and a drawn cue show what a drag would do here.
+      let edge: { axis: 'row' | 'col'; pos: number } | null = null;
+      let onHandle = false;
+      let next = 'default';
       if (y < HEADER_H && x > HEADER_W && ctrl.s.can.edit) {
         const c = hitCol(x);
-        const edge = liveColX(c) + cols.size(c);
-        setCursor(Math.abs(x - edge) <= 4 || Math.abs(x - liveColX(c)) <= 4 ? 'col-resize' : 'default');
+        const right = liveColX(c) + cols.size(c);
+        const left = liveColX(c);
+        if (Math.abs(x - right) <= EDGE) edge = { axis: 'col', pos: right };
+        else if (Math.abs(x - left) <= EDGE && c > 0) edge = { axis: 'col', pos: left };
+        next = edge ? 'col-resize' : 'default';
       } else if (x < HEADER_W && y > HEADER_H && ctrl.s.can.edit) {
         const r = hitRow(y);
-        const edge = liveRowY(r) + rows.size(r);
-        setCursor(Math.abs(y - edge) <= 3 || Math.abs(y - liveRowY(r)) <= 3 ? 'row-resize' : 'default');
+        const bottom = liveRowY(r) + rows.size(r);
+        const top = liveRowY(r);
+        if (Math.abs(y - bottom) <= EDGE) edge = { axis: 'row', pos: bottom };
+        else if (Math.abs(y - top) <= EDGE && r > 0) edge = { axis: 'row', pos: top };
+        next = edge ? 'row-resize' : 'default';
       } else if (x > HEADER_W && y > HEADER_H) {
         const sel = ctrl.selectionRange();
         const hx = liveColX(sel.c2) + cols.size(sel.c2);
         const hy = liveRowY(sel.r2) + rows.size(sel.r2);
-        const onHandle = ctrl.s.can.edit && Math.abs(x - hx) <= 6 && Math.abs(y - hy) <= 6;
-        const row = hitRow(y);
-        const col = hitCol(x);
-        const link = ctrl.model.style(ctrl.s.activeSheetId, row, col)?.link;
-        setCursor(onHandle ? 'crosshair' : link ? 'pointer' : 'cell');
-      } else setCursor('default');
+        onHandle = ctrl.s.can.edit && !ctrl.s.editing && Math.abs(x - hx) <= HANDLE && Math.abs(y - hy) <= HANDLE;
+        const link = ctrl.model.style(ctrl.s.activeSheetId, hitRow(y), hitCol(x))?.link;
+        next = onHandle ? 'crosshair' : link ? 'pointer' : 'cell';
+      }
+      setCursor((c) => (c === next ? c : next));
+      setHoverEdge((cur) => (cur?.axis === edge?.axis && cur?.pos === edge?.pos ? cur : edge));
+      setHandleHover((h) => (h === onHandle ? h : onHandle));
       return;
     }
     if (d.kind === 'touch') {
@@ -741,6 +779,10 @@ export function Grid() {
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
+              onPointerLeave={() => {
+                setHoverEdge(null);
+                setHandleHover(false);
+              }}
               onDoubleClick={onDoubleClick}
               role="grid"
               aria-label={`Sheet ${sheet.title}`}
@@ -753,7 +795,7 @@ export function Grid() {
             <canvas ref={canvasRef} style={{ position: 'sticky', top: 0, left: 0, display: 'block', width: size.w, height: size.h }} aria-hidden="true" />
           </div>
         </ContextMenu.Trigger>
-        <GridContextMenu onAfter={focusSink} />
+        <GridContextMenu onAfter={focusSink} onAutofit={autofit} />
       </ContextMenu.Root>
 
       {/* Keyboard sink: receives keys, copy, cut and paste for the grid. */}
@@ -818,14 +860,13 @@ function htmlTableToTsv(html: string): string {
   return rows.map((tr) => [...tr.querySelectorAll('td,th')].map((td) => (td.textContent ?? '').replace(/\t|\n/g, ' ')).join('\t')).join('\n');
 }
 
-function GridContextMenu({ onAfter }: { onAfter: () => void }) {
+function GridContextMenu({ onAfter, onAutofit }: { onAfter: () => void; onAutofit: (col: number) => void }) {
   const ctrl = useCtrl();
   const can = useEditor((s) => s.can);
+  const kind = useEditor((s) => s.contextKind);
   useEditor((s) => s.selection);
   const r = ctrl.selectionRange();
-  const { rows, cols } = ctrl.axes();
-  const wholeRows = r.c1 === 0 && r.c2 >= cols.count - 1;
-  const wholeCols = r.r1 === 0 && r.r2 >= rows.count - 1;
+  const sheet = ctrl.sheet()!;
   const nRows = r.r2 - r.r1 + 1;
   const nCols = r.c2 - r.c1 + 1;
   const hiddenRows = ctrl.hiddenNear('row');
@@ -852,56 +893,92 @@ function GridContextMenu({ onAfter }: { onAfter: () => void }) {
     if (text === null && !ctrl.s.copyRange) return void toast.message('Browser memblokir akses papan klip. Gunakan Ctrl+V.');
     ctrl.paste(text, opts);
   };
-  const Item = ({ children, onClick, disabled, hint }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; hint?: string }) => (
-    <ContextMenu.Item className={menuItemClass} onClick={run(onClick)} disabled={disabled}>
+  const sortSheet = (col: number, asc: boolean) => {
+    const used = ctrl.model.usedSize(sheet.id);
+    ctrl.sortRange({ r1: 0, c1: 0, r2: Math.max(0, used.rows - 1), c2: Math.max(0, used.cols - 1) }, col, asc, false);
+  };
+  const Item = ({ children, onClick, disabled, hint, icon, danger }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; hint?: string; icon?: React.ReactNode; danger?: boolean }) => (
+    <ContextMenu.Item className={clsx(menuItemClass, danger && 'text-danger')} onClick={run(onClick)} disabled={disabled}>
+      <span className="flex w-4 shrink-0 justify-center text-ink-2">{icon}</span>
       <span className="flex-1">{children}</span>
       {hint && <span className="addr text-xs text-ink-2">{hint}</span>}
     </ContextMenu.Item>
   );
   const Sep = () => <ContextMenu.Separator className="my-1 h-px bg-line" />;
+  const ic = { size: 15 };
+  const colLabel = nCols > 1 ? `${colName(r.c1)}-${colName(r.c2)}` : colName(r.c1);
+  const rowLabel = nRows > 1 ? `${r.r1 + 1}-${r.r2 + 1}` : String(r.r1 + 1);
   return (
     <ContextMenu.Portal>
       <ContextMenu.Positioner className="z-50 outline-none">
         <ContextMenu.Popup className={menuPopupClass} finalFocus={gridFocusTarget}>
-          {can.edit && <Item onClick={() => clip(true)} hint="Ctrl+X">Potong</Item>}
-          <Item onClick={() => clip(false)} hint="Ctrl+C">Salin</Item>
+          {kind !== 'cell' && (
+            <div className="px-3 pt-1.5 pb-1 text-xs font-medium text-ink-2">{kind === 'col' ? `Kolom ${colLabel}` : `Baris ${rowLabel}`}</div>
+          )}
+          {can.edit && <Item icon={<Icon.Cut {...ic} />} onClick={() => clip(true)} hint="Ctrl+X">Potong</Item>}
+          <Item icon={<Icon.Copy {...ic} />} onClick={() => clip(false)} hint="Ctrl+C">Salin</Item>
           {can.edit && (
             <>
-              <Item onClick={() => paste()} hint="Ctrl+V">Tempel</Item>
-              <Item onClick={() => paste({ valuesOnly: true })} disabled={!ctrl.s.copyRange}>Tempel nilai saja</Item>
-              <Item onClick={() => paste({ formatOnly: true })} disabled={!ctrl.s.copyRange}>Tempel format saja</Item>
-              <Sep />
-              {!wholeCols && (
+              <Item icon={<Icon.Paste {...ic} />} onClick={() => paste()} hint="Ctrl+V">Tempel</Item>
+              {kind === 'cell' && (
                 <>
-                  <Item onClick={() => ctrl.insertRows('above')}>Sisipkan {nRows} baris di atas</Item>
-                  <Item onClick={() => ctrl.insertRows('below')}>Sisipkan {nRows} baris di bawah</Item>
+                  <Item onClick={() => paste({ valuesOnly: true })} disabled={!ctrl.s.copyRange}>Tempel nilai saja</Item>
+                  <Item onClick={() => paste({ formatOnly: true })} disabled={!ctrl.s.copyRange}>Tempel format saja</Item>
                 </>
               )}
-              {!wholeRows && (
+              <Sep />
+              {kind === 'col' ? (
                 <>
-                  <Item onClick={() => ctrl.insertCols('left')}>Sisipkan {nCols} kolom di kiri</Item>
-                  <Item onClick={() => ctrl.insertCols('right')}>Sisipkan {nCols} kolom di kanan</Item>
+                  <Item icon={<Icon.Plus {...ic} />} onClick={() => ctrl.insertCols('left')}>Sisipkan {nCols} kolom di kiri</Item>
+                  <Item icon={<Icon.Plus {...ic} />} onClick={() => ctrl.insertCols('right')}>Sisipkan {nCols} kolom di kanan</Item>
+                  <Item icon={<Icon.Trash {...ic} />} danger onClick={() => ctrl.deleteCols()}>Hapus kolom {colLabel}</Item>
+                  <Item icon={<Icon.Eraser {...ic} />} onClick={() => ctrl.clearContents()} hint="Del">Hapus isi</Item>
+                  <Sep />
+                  <Item icon={<Icon.EyeOff {...ic} />} onClick={() => ctrl.setHidden('col', range(r.c1, r.c2), true)}>Sembunyikan kolom</Item>
+                  {hiddenCols.length > 0 && <Item icon={<Icon.Eye {...ic} />} onClick={() => ctrl.setHidden('col', hiddenCols, false)}>Tampilkan {hiddenCols.length} kolom tersembunyi</Item>}
+                  <Item icon={<Icon.Cols {...ic} />} onClick={() => onAutofit(r.c1)}>Lebar sesuai isi</Item>
+                  <Item onClick={() => ctrl.resize('col', range(r.c1, r.c2), sheet.defaultColumnWidth)}>Atur ulang lebar</Item>
+                  <Item icon={<Icon.Freeze {...ic} />} onClick={() => ctrl.freeze(null, r.c2 + 1)}>Bekukan sampai kolom {colName(r.c2)}</Item>
+                  <Sep />
+                  <Item icon={<Icon.SortAsc {...ic} />} onClick={() => sortSheet(r.c1, true)}>Urutkan sheet A ke Z</Item>
+                  <Item icon={<Icon.SortDesc {...ic} />} onClick={() => sortSheet(r.c1, false)}>Urutkan sheet Z ke A</Item>
+                </>
+              ) : kind === 'row' ? (
+                <>
+                  <Item icon={<Icon.Plus {...ic} />} onClick={() => ctrl.insertRows('above')}>Sisipkan {nRows} baris di atas</Item>
+                  <Item icon={<Icon.Plus {...ic} />} onClick={() => ctrl.insertRows('below')}>Sisipkan {nRows} baris di bawah</Item>
+                  <Item icon={<Icon.Trash {...ic} />} danger onClick={() => ctrl.deleteRows()}>Hapus baris {rowLabel}</Item>
+                  <Item icon={<Icon.Eraser {...ic} />} onClick={() => ctrl.clearContents()} hint="Del">Hapus isi</Item>
+                  <Sep />
+                  <Item icon={<Icon.EyeOff {...ic} />} onClick={() => ctrl.setHidden('row', range(r.r1, r.r2), true)}>Sembunyikan baris</Item>
+                  {hiddenRows.length > 0 && <Item icon={<Icon.Eye {...ic} />} onClick={() => ctrl.setHidden('row', hiddenRows, false)}>Tampilkan {hiddenRows.length} baris tersembunyi</Item>}
+                  <Item icon={<Icon.Rows {...ic} />} onClick={() => ctrl.resize('row', range(r.r1, r.r2), sheet.defaultRowHeight)}>Atur ulang tinggi</Item>
+                  <Item icon={<Icon.Freeze {...ic} />} onClick={() => ctrl.freeze(r.r2 + 1, null)}>Bekukan sampai baris {r.r2 + 1}</Item>
+                </>
+              ) : (
+                <>
+                  <Item icon={<Icon.Plus {...ic} />} onClick={() => ctrl.insertRows('above')}>Sisipkan {nRows} baris di atas</Item>
+                  <Item icon={<Icon.Plus {...ic} />} onClick={() => ctrl.insertRows('below')}>Sisipkan {nRows} baris di bawah</Item>
+                  <Item icon={<Icon.Plus {...ic} />} onClick={() => ctrl.insertCols('left')}>Sisipkan {nCols} kolom di kiri</Item>
+                  <Item icon={<Icon.Plus {...ic} />} onClick={() => ctrl.insertCols('right')}>Sisipkan {nCols} kolom di kanan</Item>
+                  <Item icon={<Icon.Trash {...ic} />} danger onClick={() => ctrl.deleteRows()}>Hapus baris {rowLabel}</Item>
+                  <Item icon={<Icon.Trash {...ic} />} danger onClick={() => ctrl.deleteCols()}>Hapus kolom {colLabel}</Item>
+                  <Sep />
+                  <Item icon={<Icon.Eraser {...ic} />} onClick={() => ctrl.clearContents()} hint="Del">Hapus isi</Item>
+                  <Item icon={<Icon.Paint {...ic} />} onClick={() => ctrl.set({ dialog: 'formatCells' })}>Format sel</Item>
+                  <Item icon={<Icon.Link {...ic} />} onClick={() => ctrl.set({ dialog: 'link' })} hint="Ctrl+K">Sisipkan tautan</Item>
+                  <Sep />
+                  <Item icon={<Icon.SortAsc {...ic} />} onClick={() => ctrl.sortSelection(true)}>Urutkan A ke Z</Item>
+                  <Item icon={<Icon.SortDesc {...ic} />} onClick={() => ctrl.sortSelection(false)}>Urutkan Z ke A</Item>
+                  <Item icon={<Icon.Filter {...ic} />} onClick={() => ctrl.set({ dialog: 'createFilter' })}>Buat filter dari rentang ini</Item>
                 </>
               )}
-              {!wholeCols && <Item onClick={() => ctrl.deleteRows()}>Hapus baris {r.r1 + 1}{nRows > 1 ? `-${r.r2 + 1}` : ''}</Item>}
-              {!wholeRows && <Item onClick={() => ctrl.deleteCols()}>Hapus kolom {ctrl.selectionRange().c1 === r.c2 ? colName(r.c1) : `${colName(r.c1)}-${colName(r.c2)}`}</Item>}
-              <Sep />
-              {wholeRows && <Item onClick={() => ctrl.setHidden('row', range(r.r1, r.r2), true)}>Sembunyikan baris</Item>}
-              {wholeCols && <Item onClick={() => ctrl.setHidden('col', range(r.c1, r.c2), true)}>Sembunyikan kolom</Item>}
-              {hiddenRows.length > 0 && <Item onClick={() => ctrl.setHidden('row', hiddenRows, false)}>Tampilkan {hiddenRows.length} baris tersembunyi</Item>}
-              {hiddenCols.length > 0 && <Item onClick={() => ctrl.setHidden('col', hiddenCols, false)}>Tampilkan {hiddenCols.length} kolom tersembunyi</Item>}
-              <Item onClick={() => ctrl.clearContents()} hint="Del">Hapus isi</Item>
-              <Item onClick={() => ctrl.set({ dialog: 'formatCells' })}>Format sel</Item>
-              <Item onClick={() => ctrl.set({ dialog: 'link' })} hint="Ctrl+K">Sisipkan tautan</Item>
-              <Sep />
-              <Item onClick={() => ctrl.sortSelection(true)}>Urutkan A ke Z</Item>
-              <Item onClick={() => ctrl.sortSelection(false)}>Urutkan Z ke A</Item>
             </>
           )}
-          {can.comment && (
+          {can.comment && kind === 'cell' && (
             <>
               <Sep />
-              <Item onClick={() => ctrl.openCommentDraft()} hint="Ctrl+Alt+M">Tambah komentar</Item>
+              <Item icon={<Icon.Comment {...ic} />} onClick={() => ctrl.openCommentDraft()} hint="Ctrl+Alt+M">Tambah komentar</Item>
             </>
           )}
         </ContextMenu.Popup>

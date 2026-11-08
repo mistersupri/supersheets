@@ -30,12 +30,20 @@ Tanpa `SMTP_URL`, email (atur ulang kata sandi, undangan) dicetak ke log server.
 
 ```bash
 pnpm --filter @opensheet/engine test    # 43 test formula engine (termasuk formula array dan spill)
-pnpm --filter @opensheet/server test    # 35 test API terhadap PostgreSQL, SMTP lokal dan penyimpanan berkas
+pnpm --filter @opensheet/server test    # 42 test API terhadap PostgreSQL, SMTP lokal, Google tiruan dan penyimpanan berkas
 pnpm --filter @opensheet/engine bench   # benchmark engine terhadap target bab 10
 pnpm typecheck
 ```
 
 Test server membutuhkan database `opensheet_test` (atau `TEST_DATABASE_URL` yang namanya berakhiran `_test`); setup test mengosongkan skema database itu dan menolak database lain.
+
+## Masuk dengan Google
+
+Buat OAuth client bertipe *Web application* di Google Cloud Console, tambahkan redirect URI `<APP_URL>/api/auth/google/callback`, lalu isi `GOOGLE_CLIENT_ID` dan `GOOGLE_CLIENT_SECRET`. Tombol "Lanjutkan dengan Google" muncul otomatis di halaman masuk dan daftar.
+
+Alurnya Authorization Code + PKCE yang dijalankan di server: `client secret` tidak pernah sampai ke browser, `state` dan verifier PKCE disimpan di cookie HttpOnly berumur 10 menit, dan email hanya dipercaya bila Google menyatakannya terverifikasi. Akun baru mengikuti pengaturan pendaftaran admin. Jika email sudah punya akun dengan kata sandi, akun itu ditautkan ke Google, kata sandi lamanya dinonaktifkan dan semua sesinya diakhiri (supaya orang yang lebih dulu mendaftar dengan email itu tidak mewarisi akses). Pemulihan tetap lewat "Lupa kata sandi".
+
+Alurnya diuji terhadap server Google tiruan (state salah, PKCE tidak cocok, email belum terverifikasi, penautan akun, dan open redirect lewat `next`). Penukaran kode dengan Google asli perlu dicoba dengan kredensial Anda.
 
 ## Kapasitas: 500 pengguna bersamaan
 
@@ -102,7 +110,7 @@ Riwayat versi memakai snapshot (revisi 0 dan setiap 100 revisi) ditambah perubah
 
 Semua modul bab 2.1 dan kriteria penerimaan bab 13 berjalan dan diuji (test otomatis dan uji klik di browser). Ringkasnya:
 
-- **Auth dan pengguna**: daftar (bisa dimatikan admin), masuk, keluar, ingat saya, lupa/atur ulang kata sandi lewat email, sesi cookie HttpOnly + SameSite, kunci akun + rate limit, kelola sesi aktif, panel admin dan log audit.
+- **Auth dan pengguna**: daftar (bisa dimatikan admin) dengan tombol tampilkan kata sandi dan penilai kekuatan, **masuk dengan Google**, masuk, keluar, ingat saya, lupa/atur ulang kata sandi lewat email, sesi cookie HttpOnly + SameSite, kunci akun + rate limit, kelola sesi aktif, panel admin dan log audit.
 - **Peran**: peran aplikasi (Super Admin/Pengguna) terpisah dari peran workbook (Pemilik, Editor + kelola akses, Editor, Komentator, Pembaca).
 - **Dasbor**: terakhir dibuka, milik saya, dibagikan, berbintang, sampah, folder, pencarian, filter, tampilan daftar/kisi, warna dokumen.
 - **Editor**: seleksi, fill handle, freeze, sembunyikan/tampilkan, ubah ukuran, tinggi baris otomatis untuk teks terbungkus, keyboard, salin/tempel, undo/redo (termasuk sisip/hapus baris dan kolom), formula bar dengan autocomplete dan pewarnaan sintaks, menu konteks, menu lengkap.

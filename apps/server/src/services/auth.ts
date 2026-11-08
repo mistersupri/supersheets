@@ -159,3 +159,17 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction) {
   }
   next();
 }
+
+/** Gives a new account the access that was offered to its email address before it existed. */
+export async function acceptInvitations(user: { id: string; email: string }) {
+  const invites = await prisma.workbookInvitation.findMany({ where: { email: user.email, acceptedAt: null } });
+  for (const inv of invites) {
+    await prisma.workbookPermission.upsert({
+      where: { workbookId_userId: { workbookId: inv.workbookId, userId: user.id } },
+      create: { workbookId: inv.workbookId, userId: user.id, permission: inv.permission },
+      update: {},
+    });
+    await prisma.workbookInvitation.update({ where: { id: inv.id }, data: { acceptedAt: new Date() } });
+    invalidate('workbook', inv.workbookId);
+  }
+}

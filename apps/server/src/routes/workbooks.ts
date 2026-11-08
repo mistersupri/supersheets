@@ -6,6 +6,7 @@ import { badRequest, forbidden, h, jsonSafe, notFound, parse } from '../lib/http
 import { broadcast } from '../realtime';
 import { capabilities, requireCapability, roleFor, type Role } from '../services/access';
 import { loadSheetCells } from '../services/cells';
+import { workbookThumbnail } from '../services/thumbnail';
 import { baseSnapshot, createWorkbook, nextSheetTitle, recordOpen, sheetPayload } from '../services/workbooks';
 
 export const workbooksRouter = Router();
@@ -246,6 +247,22 @@ workbooksRouter.post(
     await baseSnapshot(copyId);
     await audit(req, 'workbook.duplicate', { type: 'workbook', id: copyId }, { from: id });
     res.status(201).json({ id: copyId });
+  }),
+);
+
+/** Preview image for the dashboard. Cached by revision, so unchanged workbooks answer 304. */
+workbooksRouter.get(
+  '/:id/thumbnail',
+  h(async (req, res) => {
+    const { workbook } = await requireCapability(req.user!.id, req.params.id as string, 'view');
+    const etag = `W/"${workbook.id}-${workbook.revision}-${workbook.updatedAt.getTime()}"`;
+    res.setHeader('ETag', etag);
+    res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+    if (req.get('if-none-match') === etag) {
+      res.status(304).end();
+      return;
+    }
+    res.type('image/svg+xml').send(await workbookThumbnail(workbook.id));
   }),
 );
 

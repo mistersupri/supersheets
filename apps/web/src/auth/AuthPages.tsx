@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router';
+import { PasswordField } from '../components/PasswordField';
 import { Button, Checkbox, Field, Input, Spinner } from '../components/ui';
 import { api, errorMessage } from '../lib/api';
 import { useMe, type User } from '../lib/auth';
@@ -24,6 +25,50 @@ function Shell({ title, subtitle, children, footer }: { title: string; subtitle?
   );
 }
 
+const GOOGLE_ERRORS: Record<string, string> = {
+  google_denied: 'Masuk dengan Google dibatalkan.',
+  google_state: 'Sesi masuk dengan Google sudah kedaluwarsa. Coba lagi.',
+  google_failed: 'Tidak dapat menyelesaikan masuk dengan Google. Coba lagi.',
+  google_unverified: 'Email akun Google ini belum terverifikasi.',
+  registration_closed: 'Pendaftaran akun baru dinonaktifkan. Hubungi admin.',
+  account_disabled: 'Akun dinonaktifkan. Hubungi admin.',
+};
+
+function GoogleMark() {
+  // The multicolour "G" is Google's brand mark and is used as supplied.
+  return (
+    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.1C12.4 13.6 17.7 9.5 24 9.5z" />
+      <path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.6 5.9c4.5-4.1 7-10.2 7-17.6z" />
+      <path fill="#FBBC05" d="M10.5 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.2.8-4.7l-7.9-6.1C.9 16.4 0 20.1 0 24s.9 7.6 2.6 10.8l7.9-6.1z" />
+      <path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.6-5.9c-2.1 1.4-4.9 2.3-8.3 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.9 6.1C6.5 42.6 14.6 48 24 48z" />
+    </svg>
+  );
+}
+
+/** "Lanjutkan dengan Google" plus a divider, shown only when the server has Google configured. */
+function GoogleButton({ next }: { next?: string }) {
+  const config = useQuery({ queryKey: ['auth-config'], queryFn: () => api.get<{ registrationEnabled: boolean; googleEnabled?: boolean }>('/api/auth/config') });
+  if (!config.data?.googleEnabled) return null;
+  const href = `/api/auth/google${next ? `?next=${encodeURIComponent(next)}` : ''}`;
+  return (
+    <>
+      <a
+        href={href}
+        className="press inline-flex h-10 items-center justify-center gap-3 rounded-md border border-line-2 bg-surface text-sm font-medium text-ink hover:bg-surface-2 max-md:h-12"
+      >
+        <GoogleMark />
+        Lanjutkan dengan Google
+      </a>
+      <div className="flex items-center gap-3 text-xs text-ink-2" role="separator" aria-label="atau">
+        <span className="h-px flex-1 bg-line" />
+        atau dengan email
+        <span className="h-px flex-1 bg-line" />
+      </div>
+    </>
+  );
+}
+
 function FormError({ message }: { message: string | null }) {
   if (!message) return null;
   return (
@@ -41,7 +86,7 @@ export function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [remember, setRemember] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(GOOGLE_ERRORS[params.get('error') ?? ''] ?? null);
   const [busy, setBusy] = useState(false);
   const config = useQuery({ queryKey: ['auth-config'], queryFn: () => api.get<{ registrationEnabled: boolean }>('/api/auth/config') });
   if (me.data) return <Navigate to={safeNext(params.get('next'))} replace />;
@@ -79,13 +124,16 @@ export function LoginPage() {
         )
       }
     >
-      <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
+      <div className="flex flex-col gap-4">
         <FormError message={error} />
+        <GoogleButton next={params.get('next') ? safeNext(params.get('next')) : undefined} />
+      </div>
+      <form onSubmit={submit} className="mt-4 flex flex-col gap-4" noValidate>
         <Field label="Email" htmlFor="email">
           <Input id="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
         </Field>
         <Field label="Kata sandi" htmlFor="password">
-          <Input id="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+          <PasswordField id="password" autoComplete="current-password" value={password} onChange={setPassword} />
         </Field>
         <div className="flex items-center justify-between gap-2">
           <Checkbox label="Ingat saya" checked={remember} onChange={setRemember} />
@@ -152,7 +200,10 @@ export function RegisterPage() {
         </>
       }
     >
-      <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
+      <div className="flex flex-col gap-4">
+        <GoogleButton />
+      </div>
+      <form onSubmit={submit} className="mt-4 flex flex-col gap-4" noValidate>
         <FormError message={error} />
         <Field label="Nama" htmlFor="name">
           <Input id="name" autoComplete="name" required value={name} onChange={(e) => setName(e.target.value)} autoFocus />
@@ -160,10 +211,10 @@ export function RegisterPage() {
         <Field label="Email" htmlFor="email">
           <Input id="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
-        <Field label="Kata sandi" htmlFor="password" hint="Minimal 8 karakter.">
-          <Input id="password" type="password" autoComplete="new-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+        <Field label="Kata sandi" htmlFor="password">
+          <PasswordField id="password" autoComplete="new-password" value={password} onChange={setPassword} strength hints={[name, email]} />
         </Field>
-        <Button type="submit" variant="primary" disabled={busy || !name || !email || !password}>
+        <Button type="submit" variant="primary" disabled={busy || !name || !email || password.length < 8}>
           {busy && <Spinner className="border-white/40 border-t-white" />}
           Buat akun
         </Button>
@@ -255,11 +306,11 @@ export function ResetPage() {
     <Shell title="Buat kata sandi baru">
       <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
         <FormError message={error} />
-        <Field label="Kata sandi baru" htmlFor="password" hint="Minimal 8 karakter.">
-          <Input id="password" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
+        <Field label="Kata sandi baru" htmlFor="password">
+          <PasswordField id="password" autoComplete="new-password" value={password} onChange={setPassword} strength autoFocus />
         </Field>
-        <Field label="Ulangi kata sandi" htmlFor="confirm">
-          <Input id="confirm" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        <Field label="Ulangi kata sandi" htmlFor="confirm" error={confirm && confirm !== password ? 'Konfirmasi belum sama dengan kata sandi baru.' : undefined}>
+          <PasswordField id="confirm" autoComplete="new-password" value={confirm} onChange={setConfirm} invalid={!!confirm && confirm !== password} />
         </Field>
         <Button type="submit" variant="primary" disabled={busy || !password}>
           {busy && <Spinner className="border-white/40 border-t-white" />}

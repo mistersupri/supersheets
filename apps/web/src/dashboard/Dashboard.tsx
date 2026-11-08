@@ -34,20 +34,21 @@ interface Folder {
   count: number;
 }
 
-const VIEWS: { id: View; label: string; empty: string }[] = [
-  { id: 'recent', label: 'Terakhir dibuka', empty: 'Spreadsheet yang Anda buka akan muncul di sini.' },
-  { id: 'mine', label: 'Milik saya', empty: 'Anda belum membuat spreadsheet.' },
-  { id: 'shared', label: 'Dibagikan kepada saya', empty: 'Belum ada yang membagikan spreadsheet kepada Anda.' },
-  { id: 'starred', label: 'Berbintang', empty: 'Beri bintang pada spreadsheet penting agar mudah ditemukan.' },
-  { id: 'trash', label: 'Sampah', empty: 'Sampah kosong.' },
+const VIEWS: { id: View; label: string; empty: string; icon: React.ReactNode }[] = [
+  { id: 'recent', label: 'Terakhir dibuka', empty: 'Spreadsheet yang Anda buka akan muncul di sini.', icon: <Icon.Recent size={17} /> },
+  { id: 'mine', label: 'Milik saya', empty: 'Anda belum membuat spreadsheet.', icon: <Icon.Sheet size={17} /> },
+  { id: 'shared', label: 'Dibagikan kepada saya', empty: 'Belum ada yang membagikan spreadsheet kepada Anda.', icon: <Icon.Users size={17} /> },
+  { id: 'starred', label: 'Berbintang', empty: 'Beri bintang pada spreadsheet penting agar mudah ditemukan.', icon: <Icon.Star size={17} /> },
+  { id: 'trash', label: 'Sampah', empty: 'Sampah kosong.', icon: <Icon.Trash size={17} /> },
 ];
 
 function useLayoutPref() {
   const [layout, setLayout] = useState<'grid' | 'list'>(() => {
     try {
-      return localStorage.getItem('opensheet-layout') === 'grid' ? 'grid' : 'list';
+      // Grid with previews is the default; a saved choice of the list wins.
+      return localStorage.getItem('opensheet-layout') === 'list' ? 'list' : 'grid';
     } catch {
-      return 'list';
+      return 'grid';
     }
   });
   const set = (l: 'grid' | 'list') => {
@@ -172,20 +173,26 @@ export default function Dashboard() {
               <label className="sr-only" htmlFor="f-owner">
                 Pemilik
               </label>
-              <Select id="f-owner" value={owner} onChange={(e) => setOwner(e.target.value)}>
-                <option value="any">Pemilik: siapa saja</option>
-                <option value="me">Pemilik: saya</option>
-                <option value="others">Pemilik: orang lain</option>
-              </Select>
+              <span className="relative inline-flex items-center">
+                <Icon.Users size={15} className="pointer-events-none absolute left-2.5 text-ink-2" />
+                <Select id="f-owner" className="pl-8" value={owner} onChange={(e) => setOwner(e.target.value)}>
+                  <option value="any">Semua pemilik</option>
+                  <option value="me">Milik saya</option>
+                  <option value="others">Milik orang lain</option>
+                </Select>
+              </span>
               <label className="sr-only" htmlFor="f-mod">
                 Terakhir diubah
               </label>
-              <Select id="f-mod" value={modified} onChange={(e) => setModified(e.target.value)}>
-                <option value="any">Diubah: kapan saja</option>
-                <option value="7">7 hari terakhir</option>
-                <option value="30">30 hari terakhir</option>
-                <option value="365">Tahun ini</option>
-              </Select>
+              <span className="relative inline-flex items-center">
+                <Icon.Recent size={15} className="pointer-events-none absolute left-2.5 text-ink-2" />
+                <Select id="f-mod" className="pl-8" value={modified} onChange={(e) => setModified(e.target.value)}>
+                  <option value="any">Kapan saja</option>
+                  <option value="7">7 hari terakhir</option>
+                  <option value="30">30 hari terakhir</option>
+                  <option value="365">Tahun ini</option>
+                </Select>
+              </span>
               <div className="ml-auto flex rounded-md border border-line-2 bg-surface p-0.5" role="group" aria-label="Tampilan">
                 <IconButton label="Tampilan daftar" active={layout === 'list'} onClick={() => setLayout('list')}>
                   <Icon.ListView />
@@ -267,10 +274,11 @@ function Sidebar({
             onClick={onNavigate}
             aria-current={view === v.id ? 'page' : undefined}
             className={clsx(
-              'flex h-9 items-center rounded-md px-3 text-sm text-ink hover:bg-surface-2 max-md:h-11',
+              'flex h-9 items-center gap-3 rounded-md px-3 text-sm text-ink hover:bg-surface-2 max-md:h-11',
               view === v.id && 'bg-brand-soft font-medium',
             )}
           >
+            <span className="text-ink-2">{v.icon}</span>
             {v.label}
           </Link>
         ))}
@@ -483,17 +491,17 @@ function ItemMenu({ item, view, folders, onChanged, actions }: { item: Item; vie
     >
       {view === 'trash' ? (
         <>
-          <MenuItem onClick={actions.restore}>Pulihkan</MenuItem>
-          <MenuItem danger onClick={() => actions.setConfirmPurge(true)}>
+          <MenuItem icon={<Icon.Restore size={15} />} onClick={actions.restore}>Pulihkan</MenuItem>
+          <MenuItem icon={<Icon.Trash size={15} />} danger onClick={() => actions.setConfirmPurge(true)}>
             Hapus permanen
           </MenuItem>
         </>
       ) : (
         <>
-          <MenuItem onClick={actions.open}>Buka</MenuItem>
-          <MenuItem onClick={() => window.open(`/w/${item.id}`, '_blank', 'noopener')}>Buka di tab baru</MenuItem>
+          <MenuItem icon={<Icon.Sheet size={15} />} onClick={actions.open}>Buka</MenuItem>
+          <MenuItem icon={<Icon.Open size={15} />} onClick={() => window.open(`/w/${item.id}`, '_blank', 'noopener')}>Buka di tab baru</MenuItem>
           <MenuSeparator />
-          {canEdit && <MenuItem onClick={() => actions.setRenaming(true)}>Ganti nama</MenuItem>}
+          {canEdit && <MenuItem icon={<Icon.Pencil size={15} />} onClick={() => actions.setRenaming(true)}>Ganti nama</MenuItem>}
           {canEdit && (
             <SubMenu label="Warna dokumen">
               {DOC_COLORS.map((c) => (
@@ -518,12 +526,12 @@ function ItemMenu({ item, view, folders, onChanged, actions }: { item: Item; vie
               {folders.length === 0 && <MenuItem disabled>Buat folder dari panel kiri</MenuItem>}
             </SubMenu>
           )}
-          <MenuItem onClick={actions.duplicate}>Buat salinan</MenuItem>
-          <MenuItem onClick={actions.star}>{item.starred ? 'Hapus bintang' : 'Beri bintang'}</MenuItem>
+          <MenuItem icon={<Icon.Copy size={15} />} onClick={actions.duplicate}>Buat salinan</MenuItem>
+          <MenuItem icon={<Icon.Star size={15} filled={item.starred} />} onClick={actions.star}>{item.starred ? 'Hapus bintang' : 'Beri bintang'}</MenuItem>
           {isOwner && (
             <>
               <MenuSeparator />
-              <MenuItem danger onClick={actions.trash}>
+              <MenuItem icon={<Icon.Trash size={15} />} danger onClick={actions.trash}>
                 Pindahkan ke sampah
               </MenuItem>
             </>
@@ -639,26 +647,62 @@ function GridView({ items, view, folders, onChanged }: { items: Item[]; view: Vi
 function GridCard({ item, view, folders, onChanged }: { item: Item; view: View; folders: Folder[]; onChanged: () => void }) {
   const actions = useItemActions(item, onChanged);
   const when = view === 'trash' ? item.trashedAt : item.updatedAt;
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const preview = (
+    <div className="relative aspect-[8/5] overflow-hidden border-b border-line bg-white">
+      {thumbFailed ? (
+        <div className="flex size-full items-center justify-center text-ink-3">
+          <Icon.Sheet size={32} />
+        </div>
+      ) : (
+        <img
+          src={`/api/workbooks/${item.id}/thumbnail?v=${encodeURIComponent(item.updatedAt)}`}
+          alt={`Pratinjau ${item.title}`}
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+          className="size-full object-cover object-left-top"
+          onError={() => setThumbFailed(true)}
+        />
+      )}
+      {item.starred && (
+        <span className="absolute top-2 left-2 inline-flex size-6 items-center justify-center rounded-full bg-surface/90 text-accent shadow-sm">
+          <Icon.Star filled size={13} aria-label="Berbintang" />
+        </span>
+      )}
+    </div>
+  );
   return (
-    <li className="flex flex-col rounded-lg border border-line bg-surface p-3 hover:border-line-2">
-      <div className="flex items-start gap-2">
-        <span className="mt-1">
+    <li className="group flex flex-col overflow-hidden rounded-lg border border-line bg-surface transition-colors duration-150 hover:border-line-2 focus-within:border-brand">
+      {view === 'trash' ? (
+        preview
+      ) : (
+        <Link to={`/w/${item.id}`} aria-label={`Buka ${item.title}`} tabIndex={-1}>
+          {preview}
+        </Link>
+      )}
+      <div className="flex items-start gap-2 p-3">
+        <span className="mt-0.5">
           <DocMark color={item.color} />
         </span>
-        {view === 'trash' ? (
-          <span className="min-w-0 flex-1 text-sm font-medium break-words text-ink">{item.title}</span>
-        ) : (
-          <Link to={`/w/${item.id}`} className="min-h-8 min-w-0 flex-1 text-sm font-medium break-words text-ink hover:underline">
-            {item.title}
-          </Link>
-        )}
+        <div className="min-w-0 flex-1">
+          {view === 'trash' ? (
+            <span className="block truncate text-sm font-medium text-ink">{item.title}</span>
+          ) : (
+            <Link to={`/w/${item.id}`} className="block truncate text-sm font-medium text-ink hover:underline">
+              {item.title}
+            </Link>
+          )}
+          <p className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-ink-2">
+            {item.role !== 'owner' && <Icon.Users size={12} className="shrink-0" aria-label="Dibagikan" />}
+            <span className="truncate">
+              {item.role !== 'owner' ? `${item.owner.name} · ` : ''}
+              {when ? relativeTime(when) : '-'}
+            </span>
+          </p>
+        </div>
         <ItemMenu item={item} view={view} folders={folders} onChanged={onChanged} actions={actions} />
       </div>
-      <p className="mt-3 flex items-center gap-1.5 text-xs text-ink-2">
-        {item.starred && <Icon.Star filled size={12} className="text-accent" aria-label="Berbintang" />}
-        {ROLE_LABEL[item.role] ?? item.role}
-        {item.role !== 'owner' && ` · ${item.owner.name}`} · {when ? relativeTime(when) : '-'}
-      </p>
       <ItemDialogs item={item} actions={actions} />
     </li>
   );

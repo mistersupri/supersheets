@@ -252,10 +252,11 @@ export function MenuBar() {
   const a = ctrl.s.selection.anchor;
   const actions = useWorkbookActions();
   const { pref, setTheme } = useTheme();
-  const hasFilter = !!sheet.metadata.filter;
+  useEditor((s) => s.tempFilter);
+  const hasFilter = !!ctrl.activeFilter();
   const ro = !can.edit;
   const after = () => window.dispatchEvent(new Event('opensheet:focus-grid'));
-  const M = ({ children, onClick, disabled, shortcut, danger }: { children: ReactNode; onClick: () => void; disabled?: boolean; shortcut?: string; danger?: boolean }) => (
+  const M = ({ children, onClick, disabled, shortcut, danger, icon }: { children: ReactNode; onClick: () => void; disabled?: boolean; shortcut?: string; danger?: boolean; icon?: ReactNode }) => (
     <MenuItem
       onClick={() => {
         onClick();
@@ -264,6 +265,7 @@ export function MenuBar() {
       disabled={disabled}
       shortcut={shortcut}
       danger={danger}
+      icon={icon ?? null}
     >
       {children}
     </MenuItem>
@@ -274,12 +276,12 @@ export function MenuBar() {
       <BMenu.Root>
         <MenuTrigger>File</MenuTrigger>
         <MenuPanel>
-          <M onClick={actions.newWorkbook}>Spreadsheet baru</M>
-          <M onClick={actions.duplicate}>Buat salinan</M>
-          <M onClick={() => ctrl.set({ dialog: 'import' })} disabled={ro}>
+          <M icon={<Icon.Plus size={15} />} onClick={actions.newWorkbook}>Spreadsheet baru</M>
+          <M icon={<Icon.Copy size={15} />} onClick={actions.duplicate}>Buat salinan</M>
+          <M icon={<Icon.Upload size={15} />} onClick={() => ctrl.set({ dialog: 'import' })} disabled={ro}>
             Impor berkas
           </M>
-          <SubMenu label="Unduh">
+          <SubMenu icon={<Icon.Download size={15} />} label="Unduh">
             <M onClick={() => actions.download('xlsx')}>Microsoft Excel (.xlsx)</M>
             <M onClick={() => actions.download('ods')}>OpenDocument (.ods)</M>
             <M onClick={() => actions.download('csv')}>CSV, sheet aktif (.csv)</M>
@@ -288,12 +290,12 @@ export function MenuBar() {
           </SubMenu>
           {!ctrl.guest && <M onClick={() => ctrl.set({ dialog: 'files' })}>Berkas asli impor</M>}
           <MenuSeparator />
-          <M onClick={() => ctrl.set({ dialog: 'share' })}>Bagikan</M>
-          <M onClick={() => ctrl.set({ panel: 'history' })}>Riwayat versi</M>
+          <M icon={<Icon.Share size={15} />} onClick={() => ctrl.set({ dialog: 'share' })}>Bagikan</M>
+          <M icon={<Icon.History size={15} />} onClick={() => ctrl.set({ panel: 'history' })}>Riwayat versi</M>
           {can.own && (
             <>
               <MenuSeparator />
-              <M onClick={actions.trash} danger>
+              <M icon={<Icon.Trash size={15} />} onClick={actions.trash} danger>
                 Pindahkan ke sampah
               </M>
             </>
@@ -303,20 +305,20 @@ export function MenuBar() {
       <BMenu.Root>
         <MenuTrigger>Edit</MenuTrigger>
         <MenuPanel>
-          <M onClick={() => ctrl.undo()} disabled={!canUndo || ro} shortcut="Ctrl+Z">
+          <M icon={<Icon.Undo size={15} />} onClick={() => ctrl.undo()} disabled={!canUndo || ro} shortcut="Ctrl+Z">
             Urungkan
           </M>
-          <M onClick={() => ctrl.redo()} disabled={!canRedo || ro} shortcut="Ctrl+Y">
+          <M icon={<Icon.Redo size={15} />} onClick={() => ctrl.redo()} disabled={!canRedo || ro} shortcut="Ctrl+Y">
             Ulangi
           </M>
           <MenuSeparator />
-          <M onClick={() => clipboardAction(ctrl, 'cut')} disabled={ro} shortcut="Ctrl+X">
+          <M icon={<Icon.Cut size={15} />} onClick={() => clipboardAction(ctrl, 'cut')} disabled={ro} shortcut="Ctrl+X">
             Potong
           </M>
-          <M onClick={() => clipboardAction(ctrl, 'copy')} shortcut="Ctrl+C">
+          <M icon={<Icon.Copy size={15} />} onClick={() => clipboardAction(ctrl, 'copy')} shortcut="Ctrl+C">
             Salin
           </M>
-          <M onClick={() => clipboardAction(ctrl, 'paste')} disabled={ro} shortcut="Ctrl+V">
+          <M icon={<Icon.Paste size={15} />} onClick={() => clipboardAction(ctrl, 'paste')} disabled={ro} shortcut="Ctrl+V">
             Tempel
           </M>
           <M onClick={() => ctrl.paste(null, { valuesOnly: true })} disabled={ro || !ctrl.s.copyRange}>
@@ -326,7 +328,7 @@ export function MenuBar() {
             Tempel format saja
           </M>
           <MenuSeparator />
-          <M onClick={() => ctrl.clearContents()} disabled={ro} shortcut="Del">
+          <M icon={<Icon.Eraser size={15} />} onClick={() => ctrl.clearContents()} disabled={ro} shortcut="Del">
             Hapus isi
           </M>
           <M onClick={() => ctrl.deleteRows()} disabled={ro}>
@@ -336,7 +338,7 @@ export function MenuBar() {
             Hapus kolom terpilih
           </M>
           <MenuSeparator />
-          <M onClick={() => ctrl.set({ dialog: 'find', findOpenReplace: !ro })} shortcut="Ctrl+H">
+          <M icon={<Icon.Search size={15} />} onClick={() => ctrl.set({ dialog: 'find', findOpenReplace: !ro })} shortcut="Ctrl+H">
             Cari dan ganti
           </M>
         </MenuPanel>
@@ -344,7 +346,7 @@ export function MenuBar() {
       <BMenu.Root>
         <MenuTrigger>Tampilan</MenuTrigger>
         <MenuPanel>
-          <SubMenu label="Bekukan" disabled={ro}>
+          <SubMenu icon={<Icon.Freeze size={15} />} label="Bekukan" disabled={ro}>
             <Check on={sheet.frozenRows === 0} onClick={() => ctrl.freeze(0, null)}>
               Tanpa baris
             </Check>
@@ -378,7 +380,7 @@ export function MenuBar() {
             Tampilkan formula
           </Check>
           <MenuSeparator />
-          <SubMenu label="Tema">
+          <SubMenu icon={<Icon.Sun size={15} />} label="Tema">
             <Check on={pref === 'system'} onClick={() => setTheme('system')}>
               Ikuti sistem
             </Check>
@@ -410,10 +412,10 @@ export function MenuBar() {
           <M onClick={() => ctrl.addSheet().catch((e) => toast.error(errorMessage(e)))} disabled={ro}>
             Sheet baru
           </M>
-          <M onClick={() => ctrl.set({ dialog: 'link' })} disabled={ro} shortcut="Ctrl+K">
+          <M icon={<Icon.Link size={15} />} onClick={() => ctrl.set({ dialog: 'link' })} disabled={ro} shortcut="Ctrl+K">
             Tautan
           </M>
-          <M onClick={() => ctrl.openCommentDraft()} disabled={!can.comment}>
+          <M icon={<Icon.Comment size={15} />} onClick={() => ctrl.openCommentDraft()} disabled={!can.comment}>
             Komentar
           </M>
           <MenuSeparator />
@@ -429,7 +431,7 @@ export function MenuBar() {
       <BMenu.Root>
         <MenuTrigger>Format</MenuTrigger>
         <MenuPanel>
-          <SubMenu label="Angka" disabled={ro}>
+          <SubMenu icon={null} label="Angka" disabled={ro}>
             {NUMBER_FORMATS.map(([id, label, sample]) => (
               <BMenu.Item key={id} className={menuItemClass} onClick={() => (ctrl.applyStyle({ numberFormat: id === 'auto' ? undefined : id }, 'Format angka'), after())}>
                 <span className="flex-1">{label}</span>
@@ -439,7 +441,7 @@ export function MenuBar() {
             <MenuSeparator />
             <M onClick={() => ctrl.set({ dialog: 'formatCells' })}>Format kustom</M>
           </SubMenu>
-          <SubMenu label="Teks" disabled={ro}>
+          <SubMenu icon={null} label="Teks" disabled={ro}>
             <M onClick={() => ctrl.toggleStyle('bold')} shortcut="Ctrl+B">
               Tebal
             </M>
@@ -453,7 +455,7 @@ export function MenuBar() {
               Coret
             </M>
           </SubMenu>
-          <SubMenu label="Perataan" disabled={ro}>
+          <SubMenu icon={<Icon.AlignLeft size={15} />} label="Perataan" disabled={ro}>
             <M onClick={() => ctrl.applyStyle({ hAlign: 'left' })}>Kiri</M>
             <M onClick={() => ctrl.applyStyle({ hAlign: 'center' })}>Tengah</M>
             <M onClick={() => ctrl.applyStyle({ hAlign: 'right' })}>Kanan</M>
@@ -466,7 +468,7 @@ export function MenuBar() {
             Bungkus teks
           </M>
           <MenuSeparator />
-          <M onClick={() => ctrl.merge()} disabled={ro}>
+          <M icon={<Icon.Merge size={15} />} onClick={() => ctrl.merge()} disabled={ro}>
             Gabungkan sel
           </M>
           <M onClick={() => ctrl.unmerge()} disabled={ro}>
@@ -487,20 +489,20 @@ export function MenuBar() {
       <BMenu.Root>
         <MenuTrigger>Data</MenuTrigger>
         <MenuPanel>
-          <M onClick={() => ctrl.sortSelection(true)} disabled={ro}>
+          <M icon={<Icon.SortAsc size={15} />} onClick={() => ctrl.sortSelection(true)} disabled={ro}>
             Urutkan A ke Z
           </M>
-          <M onClick={() => ctrl.sortSelection(false)} disabled={ro}>
+          <M icon={<Icon.SortDesc size={15} />} onClick={() => ctrl.sortSelection(false)} disabled={ro}>
             Urutkan Z ke A
           </M>
           <M onClick={() => ctrl.set({ dialog: 'sort' })} disabled={ro}>
             Urutkan rentang
           </M>
           <MenuSeparator />
-          <M onClick={() => ctrl.createFilter()} disabled={ro}>
+          <M icon={<Icon.Filter size={15} />} onClick={() => ctrl.createFilter()}>
             {hasFilter ? 'Hapus filter' : 'Buat filter'}
           </M>
-          <SubMenu label="Tampilan filter">
+          <SubMenu icon={<Icon.Filter size={15} />} label="Tampilan filter">
             <Check on={!tempFilter} onClick={() => ctrl.applyFilterView(null)}>
               Filter bersama
             </Check>
@@ -524,7 +526,7 @@ export function MenuBar() {
           <M onClick={() => ctrl.set({ dialog: 'split' })} disabled={ro}>
             Pisahkan teks ke kolom
           </M>
-          <M onClick={() => ctrl.set({ dialog: 'protect' })} disabled={!can.manage}>
+          <M icon={<Icon.Lock size={15} />} onClick={() => ctrl.set({ dialog: 'protect' })} disabled={!can.manage}>
             Sheet dan rentang dilindungi
           </M>
         </MenuPanel>
@@ -602,7 +604,8 @@ export function Toolbar() {
   const st = ctrl.activeStyle();
   const ro = !can.edit;
   const after = () => window.dispatchEvent(new Event('opensheet:focus-grid'));
-  const hasFilter = !!ctrl.sheet()?.metadata.filter;
+  useEditor((s) => s.tempFilter);
+  const hasFilter = !!ctrl.activeFilter();
   const selectCls = 'h-8 rounded border border-transparent bg-transparent px-1.5 text-[13px] text-ink hover:border-line focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-40 max-md:h-11';
 
   return (
@@ -787,7 +790,7 @@ export function Toolbar() {
       <IconButton label="Tambah komentar" onClick={() => ctrl.openCommentDraft()} disabled={!can.comment}>
         <Icon.Comment />
       </IconButton>
-      <IconButton label={hasFilter ? 'Hapus filter' : 'Buat filter'} active={hasFilter} onClick={() => (ctrl.createFilter(), after())} disabled={ro}>
+      <IconButton label={hasFilter ? 'Hapus filter' : 'Buat filter'} active={hasFilter} onClick={() => (ctrl.createFilter(), after())}>
         <Icon.Filter />
       </IconButton>
       <IconButton label="Hapus format" onClick={() => (ctrl.clearFormatting(), after())} disabled={ro}>
@@ -1114,7 +1117,7 @@ export function ConfirmDialog({ title, body, confirm, onCancel, onConfirm }: { t
   );
 }
 
-/** Sum / average / count for the selected cells, like the corner of other spreadsheets. */
+/** Sum, average and more for the selected cells. Each value copies when clicked. */
 function SelectionStats() {
   const ctrl = useCtrl();
   useEditor((s) => s.selection);
@@ -1126,6 +1129,8 @@ function SelectionStats() {
   let sum = 0;
   let nums = 0;
   let count = 0;
+  let min = Infinity;
+  let max = -Infinity;
   ctrl.forEachInRange(r, (row, col) => {
     const v = ctrl.model.value(sid, row, col);
     if (v === null || v === '') return;
@@ -1133,15 +1138,40 @@ function SelectionStats() {
     if (typeof v === 'number' && !isError(v)) {
       sum += v;
       nums++;
+      if (v < min) min = v;
+      if (v > max) max = v;
     }
   });
   if (!count) return null;
-  const fmt = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 4 });
+  const show = (n: number) => n.toLocaleString('id-ID', { maximumFractionDigits: 4 });
+  const stats: { key: string; label: string; value: number }[] = [];
+  if (nums > 0) stats.push({ key: 'sum', label: 'Jumlah', value: sum }, { key: 'avg', label: 'Rata-rata', value: sum / nums }, { key: 'min', label: 'Min', value: min }, { key: 'max', label: 'Maks', value: max });
+  stats.push({ key: 'count', label: 'Terisi', value: count });
+  const copy = async (label: string, value: number) => {
+    // Plain digits, so the value pastes into a cell or a formula as a number.
+    const text = String(Number(value.toPrecision(12)));
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(`${label} disalin: ${show(value)}`);
+    } catch {
+      toast.error('Browser memblokir akses papan klip.');
+    }
+  };
   return (
-    <div className="tnum hidden items-center gap-3 px-3 text-xs whitespace-nowrap text-ink-2 sm:flex" aria-live="polite">
-      {nums > 0 && <span>Jumlah: {fmt(sum)}</span>}
-      {nums > 0 && <span>Rata-rata: {fmt(sum / nums)}</span>}
-      <span>Terisi: {count}</span>
+    <div className="tnum scroll-thin hidden max-w-[55%] items-center gap-0.5 overflow-x-auto px-1 sm:flex" role="group" aria-label="Ringkasan pilihan. Klik untuk menyalin.">
+      {stats.map((s) => (
+        <button
+          key={s.key}
+          type="button"
+          title={`Klik untuk menyalin ${s.label.toLowerCase()}`}
+          className="press group inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs whitespace-nowrap text-ink-2 hover:bg-surface-3 hover:text-ink"
+          onClick={() => copy(s.label, s.value)}
+        >
+          <span>{s.label}</span>
+          <span className="font-medium text-ink">{show(s.value)}</span>
+          <Icon.Copy size={12} className="opacity-0 transition-opacity group-hover:opacity-70 group-focus-visible:opacity-70" />
+        </button>
+      ))}
     </div>
   );
 }
@@ -1150,6 +1180,7 @@ function SelectionStats() {
 
 export function StatusBar() {
   const ctrl = useCtrl();
+  useEditor((s) => s.tempFilter);
   const sel = useEditor((s) => s.selection);
   const users = useEditor((s) => s.users);
   useEditor((s) => s.version);
@@ -1171,6 +1202,16 @@ export function StatusBar() {
         <span className="truncate">
           Terakhir diubah {info.by ? `oleh ${users[info.by] ?? 'kolaborator'} ` : ''}
           {relativeTime(info.at)}
+        </span>
+      )}
+      {ctrl.activeFilter() && (
+        <span className="inline-flex items-center gap-1.5 rounded-md border border-line px-1.5 py-0.5">
+          <Icon.Filter size={12} className={ctrl.filterIsShared() ? 'text-brand' : 'text-accent'} />
+          <span className="addr">{formatRangeA1(ctrl.activeFilter()!)}</span>
+          <span>{ctrl.filterIsShared() ? 'untuk semua' : 'hanya saya'}</span>
+          <button type="button" aria-label="Hapus filter" className="press -mr-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-surface-3" onClick={() => ctrl.removeFilter()}>
+            <Icon.Close size={12} />
+          </button>
         </span>
       )}
       {spillNote && <span className={clsx(spill?.ok ? 'text-ink-2' : 'text-danger')}>{spillNote}</span>}

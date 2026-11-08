@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
+import { PasswordField } from '../components/PasswordField';
 import { Button, ErrorState, Field, Input, Spinner } from '../components/ui';
 import { api, errorMessage } from '../lib/api';
 import { useMe } from '../lib/auth';
@@ -70,10 +71,10 @@ export default function SettingsPage() {
       <Section title="Kata sandi" description="Mengganti kata sandi akan mengeluarkan sesi di perangkat lain.">
         <form onSubmit={savePassword} className="flex max-w-md flex-col gap-3">
           <Field label="Kata sandi saat ini" htmlFor="s-cur">
-            <Input id="s-cur" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
+            <PasswordField id="s-cur" autoComplete="current-password" value={current} onChange={setCurrent} />
           </Field>
-          <Field label="Kata sandi baru" htmlFor="s-new" hint="Minimal 8 karakter.">
-            <Input id="s-new" type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} />
+          <Field label="Kata sandi baru" htmlFor="s-new">
+            <PasswordField id="s-new" autoComplete="new-password" value={next} onChange={setNext} strength hints={[user.name, user.email]} />
           </Field>
           <div>
             <Button type="submit" variant="primary" disabled={busy === 'pw' || !current || !next}>

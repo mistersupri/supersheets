@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Icon } from '../components/icons';
 import { highlightFormula } from './FormulaHighlight';
 import { useCtrl, useEditor } from './context';
 import { applySuggestion, AssistPanel, useFormulaAssist } from './formulaAssist';
@@ -148,6 +149,48 @@ export function CellEditor({ rect, viewport, onDone }: { rect: { x: number; y: n
       />
       <div className="pointer-events-auto mt-1">
         <AssistPanel assist={assist} active={active} onPick={pick} id="cell-assist" />
+        {!assist.suggestions.length && (editing.value === '' || editing.value === '=') && (
+          <SuggestChips
+            row={editing.row}
+            col={editing.col}
+            onPick={(formula) => {
+              ctrl.updateEdit(formula, 'cell');
+              finish('down');
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** One-click formulas for the numbers next to the cell being edited. */
+export function SuggestChips({ row, col, onPick }: { row: number; col: number; onPick: (formula: string) => void }) {
+  const ctrl = useCtrl();
+  const s = ctrl.suggestFormulas(row, col);
+  if (!s) return null;
+  return (
+    <div role="group" aria-label={`Saran formula untuk ${s.orientation === 'column' ? 'kolom' : 'baris'} ${s.range}`} className="w-72 max-w-[calc(100vw-24px)] rounded-md border border-line bg-surface p-2 shadow-pop">
+      <p className="mb-1.5 flex items-center gap-1.5 text-xs text-ink-2">
+        <Icon.Calc size={13} />
+        <span>
+          {s.orientation === 'column' ? 'Angka di atas' : 'Angka di kiri'} <span className="addr text-ink">{s.range}</span>
+        </span>
+      </p>
+      <div className="flex flex-wrap gap-1">
+        {s.items.map((i) => (
+          <button
+            key={i.fn}
+            type="button"
+            title={i.formula}
+            // Keep focus in the editor while clicking.
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => onPick(i.formula)}
+            className="press addr inline-flex h-7 items-center rounded-md border border-line-2 bg-surface-2 px-2 text-xs font-medium text-ink hover:border-brand hover:bg-brand-soft"
+          >
+            {i.fn}
+          </button>
+        ))}
       </div>
     </div>
   );

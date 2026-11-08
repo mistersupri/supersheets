@@ -23,6 +23,7 @@ import { api, errorMessage } from '../lib/api';
 import { useMe } from '../lib/auth';
 import { dateTime } from '../lib/format';
 import { clipboardAction, insertCheckbox, useWorkbookActions } from './chrome';
+import { SuggestChips } from './CellEditor';
 import { ColorPicker } from './ColorPicker';
 import { useCtrl, useEditor } from './context';
 import { roleLabel } from './controller';
@@ -55,6 +56,7 @@ export function EditorDialogs() {
       <FunctionsDialog />
       <ImportDialog />
       <FilterViewDialog />
+      <CreateFilterDialog />
       <FilesDialog />
       <MobileFormulaSheet />
       <MobileFormatSheet />
@@ -1152,6 +1154,81 @@ function ImportDialog() {
   );
 }
 
+function CreateFilterDialog() {
+  const { open, close, ctrl } = useDialog('createFilter');
+  const [text, setText] = useState('');
+  const [shared, setShared] = useState(false);
+  const range = useMemo(() => parseRangeA1(text.trim().toUpperCase()), [text]);
+  const can = useEditor((s) => s.can);
+  useEffect(() => {
+    if (!open) return;
+    const r = ctrl.defaultFilterRange();
+    setText(formatRangeA1(r));
+    setShared(false);
+  }, [open, ctrl]);
+  // Highlight the range on the grid while the dialog is open, and scroll to it.
+  useEffect(() => {
+    ctrl.set({ filterPreview: open && range ? range : null });
+    return () => ctrl.set({ filterPreview: null });
+  }, [open, range, ctrl]);
+  const tooSmall = !!range && range.r1 === range.r2;
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => !o && close()}
+      title="Buat filter"
+      width={480}
+      footer={
+        <>
+          <Button onClick={close}>Batal</Button>
+          <Button
+            variant="primary"
+            disabled={!range || tooSmall}
+            onClick={() => {
+              ctrl.createFilterOn(range!, shared);
+              close();
+            }}
+          >
+            <Icon.Filter /> Buat filter
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <Field
+          label="Rentang filter"
+          htmlFor="flt-range"
+          hint="Baris pertama rentang menjadi judul kolom. Rentang disorot di sheet."
+          error={text && !range ? 'Rentang tidak valid. Contoh: A1:D20' : tooSmall ? 'Rentang minimal dua baris: judul dan satu baris data.' : undefined}
+        >
+          <Input id="flt-range" className="addr" value={text} onChange={(e) => setText(e.target.value)} autoFocus />
+        </Field>
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-1 text-[13px] font-medium">Siapa yang terpengaruh</legend>
+          {(
+            [
+              [false, <Icon.Eye key="e" size={16} />, 'Hanya untuk saya', 'Orang lain tetap melihat semua baris. Tersimpan di browser ini.'],
+              [true, <Icon.Users key="u" size={16} />, 'Untuk semua orang', 'Baris yang disaring ikut tersembunyi bagi semua pengguna workbook ini.'],
+            ] as const
+          ).map(([value, icon, label, desc]) => {
+            const disabled = value && !can.edit;
+            return (
+              <label key={label} className={clsx('flex cursor-pointer items-start gap-3 rounded-md border p-3', shared === value ? 'border-brand bg-brand-soft' : 'border-line hover:bg-surface-2', disabled && 'cursor-not-allowed opacity-50')}>
+                <input type="radio" name="flt-scope" className="mt-1 accent-[var(--brand)]" checked={shared === value} disabled={disabled} onChange={() => setShared(value)} />
+                <span className="mt-0.5 text-ink-2">{icon}</span>
+                <span>
+                  <span className="block text-sm font-medium text-ink">{label}</span>
+                  <span className="block text-xs text-ink-2">{desc}</span>
+                </span>
+              </label>
+            );
+          })}
+        </fieldset>
+      </div>
+    </Dialog>
+  );
+}
+
 function FilesDialog() {
   const { open, close, ctrl } = useDialog('files');
   const q = useQuery({
@@ -1309,6 +1386,16 @@ function MobileFormulaSheet() {
               </button>
             ))}
           </div>
+          {(editing.value === '' || editing.value === '=') && (
+            <SuggestChips
+              row={editing.row}
+              col={editing.col}
+              onPick={(formula) => {
+                ctrl.updateEdit(formula);
+                commit('down');
+              }}
+            />
+          )}
           <AssistPanel
             assist={assist}
             active={0}
@@ -1477,7 +1564,7 @@ function MobileMenuSheet() {
             Urutkan Z ke A
           </Row>
           <Row onClick={go(() => ctrl.createFilter())} disabled={ro}>
-            {ctrl.sheet()?.metadata.filter ? 'Hapus filter' : 'Buat filter'}
+            {ctrl.activeFilter() ? 'Hapus filter' : 'Buat filter'}
           </Row>
           <Row onClick={go(() => ctrl.set({ dialog: 'validation' }))} disabled={ro}>
             Validasi data

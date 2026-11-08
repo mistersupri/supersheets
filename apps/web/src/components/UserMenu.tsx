@@ -25,8 +25,8 @@ export function UserMenu() {
               <p className="text-xs text-ink-2">{user.email}</p>
             </div>
             <MenuSeparator />
-            <MenuItem onClick={() => nav('/settings')}>Pengaturan akun</MenuItem>
-            {user.role === 'super_admin' && <MenuItem onClick={() => nav('/admin')}>Administrasi</MenuItem>}
+            <MenuItem icon={<Icon.Settings size={15} />} onClick={() => nav('/settings')}>Pengaturan akun</MenuItem>
+            {user.role === 'super_admin' && <MenuItem icon={<Icon.Shield size={15} />} onClick={() => nav('/admin')}>Administrasi</MenuItem>}
             <MenuSeparator />
             <BMenu.Group>
               <BMenu.GroupLabel className="px-3 pt-1 pb-0.5 text-xs text-ink-2">Tema</BMenu.GroupLabel>
@@ -48,7 +48,7 @@ export function UserMenu() {
               </BMenu.RadioGroup>
             </BMenu.Group>
             <MenuSeparator />
-            <MenuItem onClick={logout}>Keluar</MenuItem>
+            <MenuItem icon={<Icon.LogOut size={15} />} onClick={logout}>Keluar</MenuItem>
           </BMenu.Popup>
         </BMenu.Positioner>
       </BMenu.Portal>
