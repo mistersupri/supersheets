@@ -169,6 +169,30 @@ const metadataSchema = z
     merges: z.array(z.object({ r1: intIdx, c1: colIdx, r2: intIdx, c2: colIdx })).max(10_000).optional(),
     filter: z.any().nullable().optional(),
     filterViews: z.array(z.any()).max(50).optional(),
+    charts: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(40),
+            type: z.enum(['column', 'bar', 'line', 'area', 'pie', 'scatter']),
+            title: z.string().max(200),
+            range: rangeString(),
+            headerRow: z.boolean(),
+            headerCol: z.boolean(),
+            seriesIn: z.enum(['cols', 'rows']),
+            stacked: z.boolean(),
+            legend: z.enum(['none', 'top', 'bottom', 'right']),
+            row: intIdx,
+            col: colIdx,
+            dx: z.number().int().min(0).max(5000),
+            dy: z.number().int().min(0).max(5000),
+            w: z.number().int().min(160).max(2000),
+            h: z.number().int().min(120).max(1500),
+          })
+          .strict(),
+      )
+      .max(50)
+      .optional(),
     showGridlines: z.boolean().optional(),
     tabColor: color.nullable().optional(),
   })
@@ -373,7 +397,7 @@ worksheetsRouter.put(
     const id = req.params.id as string;
     const body = parse(
       z.object({
-        items: z.array(z.object({ range: rangeString().nullable(), description: z.string().max(200).nullable().optional(), editorIds: z.array(z.string().uuid()).max(100) })).max(100),
+        items: z.array(z.object({ range: rangeString().nullable(), description: z.string().max(200).nullable().optional(), editorIds: z.array(z.string().uuid()).max(100), exceptRanges: z.array(rangeString()).max(50).optional() })).max(100),
       }),
       req.body,
     );
@@ -381,7 +405,7 @@ worksheetsRouter.put(
     await requireCapability(req.user!.id, workbookId, 'manage');
     await prisma.$transaction([
       prisma.protectedRange.deleteMany({ where: { worksheetId: id } }),
-      prisma.protectedRange.createMany({ data: body.items.map((i) => ({ worksheetId: id, range: i.range, description: i.description ?? null, editorIds: i.editorIds })) }),
+      prisma.protectedRange.createMany({ data: body.items.map((i) => ({ worksheetId: id, range: i.range, description: i.description ?? null, editorIds: i.editorIds, exceptRanges: i.range === null ? (i.exceptRanges ?? []) : [] })) }),
       prisma.worksheet.update({ where: { id }, data: { isProtected: body.items.some((i) => i.range === null) } }),
     ]);
     const sheet = await sheetPayload(id);

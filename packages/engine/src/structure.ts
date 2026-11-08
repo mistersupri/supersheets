@@ -79,6 +79,18 @@ export function shiftMetadata(md: SheetMetadata, op: StructureOp): SheetMetadata
     }
     return n;
   };
+  if (md.charts) {
+    out.charts = md.charts
+      .map((c) => {
+        const range = shiftA1(c.range, op);
+        if (range === undefined || range === null) return null;
+        // The anchor follows its cell; when that row or column is deleted it lands where the gap closed.
+        const at = op.axis === 'row' ? c.row : c.col;
+        const moved = shiftIndex(at, op) ?? Math.max(0, op.index);
+        return { ...c, range, ...(op.axis === 'row' ? { row: moved } : { col: moved }) };
+      })
+      .filter((c): c is NonNullable<typeof c> => !!c);
+  }
   if (md.filter !== undefined) out.filter = shiftFilter(md.filter);
   if (md.filterViews) out.filterViews = md.filterViews.map((v) => ({ ...v, filter: shiftFilter(v.filter) })).filter((v) => v.filter) as SheetMetadata['filterViews'];
   return out;

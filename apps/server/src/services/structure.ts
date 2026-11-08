@@ -92,6 +92,10 @@ export async function applyStructure(input: { workbookId: string; sheetId: strin
         const r = shiftA1(v.range, op);
         if (r === undefined) await tx.protectedRange.delete({ where: { id: v.id } });
         else if (r !== v.range) await tx.protectedRange.update({ where: { id: v.id }, data: { range: r } });
+        if (v.exceptRanges.length) {
+          const next = v.exceptRanges.map((x) => shiftA1(x, op)).filter((x): x is string => typeof x === 'string');
+          if (next.join() !== v.exceptRanges.join()) await tx.protectedRange.update({ where: { id: v.id }, data: { exceptRanges: next } });
+        }
       }
 
       // 5. One revision for the whole change.

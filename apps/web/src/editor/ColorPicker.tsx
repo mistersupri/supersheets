@@ -1,7 +1,17 @@
 import { Popover } from '@base-ui/react/popover';
 import clsx from 'clsx';
 import { useState, type ReactElement } from 'react';
+import { Icon } from '../components/icons';
 import { Button, Input } from '../components/ui';
+
+/** Chromium's EyeDropper API; other browsers do not have it, so the button is hidden there. */
+interface EyeDropperApi {
+  open(): Promise<{ sRGBHex: string }>;
+}
+const eyeDropper = (): EyeDropperApi | null => {
+  const E = (window as unknown as { EyeDropper?: new () => EyeDropperApi }).EyeDropper;
+  return E ? new E() : null;
+};
 
 /** Cell colours are user data, so the picker offers a broad, ordered set. */
 const SWATCHES = [
@@ -17,6 +27,15 @@ export function ColorPicker({ trigger, value, onChange, label, resetLabel }: { t
   const [open, setOpen] = useState(false);
   const [hex, setHex] = useState(value ?? '');
   const valid = /^#[0-9a-fA-F]{6}$/.test(hex);
+  const canPick = typeof window !== 'undefined' && 'EyeDropper' in window;
+  const pickFromScreen = async () => {
+    try {
+      const r = await eyeDropper()?.open();
+      if (r) choose(r.sRGBHex.toUpperCase());
+    } catch {
+      // Escape closes the dropper without a colour; keep the picker as it was.
+    }
+  };
   const choose = (c: string | undefined) => {
     onChange(c);
     setOpen(false);
@@ -27,9 +46,22 @@ export function ColorPicker({ trigger, value, onChange, label, resetLabel }: { t
       <Popover.Portal>
         <Popover.Positioner sideOffset={4} align="start" className="z-50 outline-none">
           <Popover.Popup aria-label={label} className="pop w-[248px] rounded-md border border-line bg-surface p-3 shadow-pop outline-none">
-            <button type="button" className="mb-2 min-h-8 w-full rounded border border-line px-2 text-left text-[13px] hover:bg-surface-2 max-md:min-h-11" onClick={() => choose(undefined)}>
-              {resetLabel}
-            </button>
+            <div className="mb-2 flex gap-2">
+              <button type="button" className="min-h-8 flex-1 rounded border border-line px-2 text-left text-[13px] hover:bg-surface-2 max-md:min-h-11" onClick={() => choose(undefined)}>
+                {resetLabel}
+              </button>
+              {canPick && (
+                <button
+                  type="button"
+                  aria-label="Ambil warna dari layar"
+                  title="Ambil warna dari layar"
+                  className="press inline-flex min-h-8 min-w-8 items-center justify-center rounded border border-line text-ink-2 hover:bg-surface-2 max-md:min-h-11 max-md:min-w-11"
+                  onClick={pickFromScreen}
+                >
+                  <Icon.Pipette />
+                </button>
+              )}
+            </div>
             <div className="grid grid-cols-10 gap-[3px]" role="listbox" aria-label={label}>
               {SWATCHES.map((c) => (
                 <button

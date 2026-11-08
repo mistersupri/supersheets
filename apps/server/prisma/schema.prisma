@@ -320,6 +320,8 @@ model ProtectedRange {
   range       String?   @db.VarChar(40) // null = whole sheet
   description String?
   editorIds   String[]  @map("editor_ids") @db.Uuid
+  /// Whole-sheet protection only: ranges that stay editable for everyone.
+  exceptRanges String[] @default([]) @map("except_ranges") @db.VarChar(40)
   worksheet   Worksheet @relation(fields: [worksheetId], references: [id], onDelete: Cascade)
 
   @@map("protected_ranges")

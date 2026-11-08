@@ -37,6 +37,14 @@
   --ref-4: #2f7d32;
   --ref-5: #a15c00;
   --ref-6: #c2185b;
+  --chart-1: #17603f;
+  --chart-2: #2563a8;
+  --chart-3: #b4481f;
+  --chart-4: #a15c00;
+  --chart-5: #7a3e9d;
+  --chart-6: #1b8c8c;
+  --chart-7: #c2185b;
+  --chart-8: #6b7280;
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
   color-scheme: light;
@@ -74,6 +82,14 @@
     --ref-4: #7ccb80;
     --ref-5: #e8b04a;
     --ref-6: #f07aa8;
+    --chart-1: #5bbf8c;
+    --chart-2: #7fb2f0;
+    --chart-3: #f08a5d;
+    --chart-4: #e8b04a;
+    --chart-5: #c49be8;
+    --chart-6: #5fd0d0;
+    --chart-7: #f07aa8;
+    --chart-8: #a3acb8;
     color-scheme: dark;
   }
 }
@@ -109,6 +125,14 @@
   --ref-4: #7ccb80;
   --ref-5: #e8b04a;
   --ref-6: #f07aa8;
+  --chart-1: #5bbf8c;
+  --chart-2: #7fb2f0;
+  --chart-3: #f08a5d;
+  --chart-4: #e8b04a;
+  --chart-5: #c49be8;
+  --chart-6: #5fd0d0;
+  --chart-7: #f07aa8;
+  --chart-8: #a3acb8;
   color-scheme: dark;
 }
 
@@ -263,9 +287,43 @@ body {
     font: inherit;
     color: inherit;
   }
+
+  /* Anything that acts on click shows the pointer; disabled ones say so. The canvas grid sets its own cursor. */
+  button,
+  summary,
+  select,
+  a[href],
+  label[for],
+  label:has(input[type='radio']),
+  label:has(input[type='checkbox']),
+  input[type='checkbox'],
+  input[type='radio'],
+  input[type='range'],
+  input[type='file'],
+  [role='button'],
+  [role='menuitem'],
+  [role='menuitemcheckbox'],
+  [role='menuitemradio'],
+  [role='option'],
+  [role='tab'],
+  [role='switch'],
+  [role='checkbox'],
+  [role='radio'],
+  [role='link'],
+  [role='combobox'] {
+    cursor: pointer;
+  }
+  button:disabled,
+  select:disabled,
+  input:disabled,
+  [aria-disabled='true'],
+  [data-disabled] {
+    cursor: not-allowed;
+  }
 }
 
 .scroll-thin {
   scrollbar-width: thin;
   scrollbar-color: var(--line-2) transparent;
 }
+

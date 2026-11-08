@@ -505,7 +505,7 @@ function ItemMenu({ item, view, folders, onChanged, actions }: { item: Item; vie
           {canEdit && (
             <SubMenu label="Warna dokumen">
               {DOC_COLORS.map((c) => (
-                <BMenu.Item key={c.id} className="flex min-h-8 cursor-default items-center gap-3 px-3 py-1.5 outline-none data-highlighted:bg-brand-soft max-md:min-h-11" onClick={() => actions.color(c.id)}>
+                <BMenu.Item key={c.id} className="flex min-h-8 cursor-pointer items-center gap-3 px-3 py-1.5 outline-none data-highlighted:bg-brand-soft max-md:min-h-11" onClick={() => actions.color(c.id)}>
                   <span className="size-3.5 rounded-sm" style={{ background: c.hex }} />
                   <span className="flex-1">{c.label}</span>
                   {item.color === c.id && <Icon.Check size={14} />}

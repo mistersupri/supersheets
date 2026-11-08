@@ -167,6 +167,32 @@ describe('permissions', () => {
     expect(r.status).toBe(403);
     await owner.put(`/api/worksheets/${sheetId}/protected-ranges`).set(H).send({ items: [] });
   });
+  it('whole-sheet protection can leave some ranges open', async () => {
+    const put = await owner.put(`/api/worksheets/${sheetId}/protected-ranges`).set(H).send({ items: [{ range: null, editorIds: [], exceptRanges: ['B1:B3'] }] });
+    expect(put.status).toBe(200);
+    expect(put.body.sheet.protectedRanges[0].exceptRanges).toEqual(['B1:B3']);
+    const blocked = await editor.post(`/api/worksheets/${sheetId}/cells/batch`).set(H).send({ baseRevision: 4, clientId: 'client-c', ops: [{ sheetId, row: 0, col: 0, raw: '1' }] });
+    expect(blocked.status).toBe(403);
+    const mixed = await editor.post(`/api/worksheets/${sheetId}/cells/batch`).set(H).send({ baseRevision: 4, clientId: 'client-c', ops: [{ sheetId, row: 1, col: 1, raw: 'x' }, { sheetId, row: 5, col: 5, raw: 'y' }] });
+    expect(mixed.status).toBe(403);
+    // A write that stays inside the exception goes through. Read the current revision first.
+    const rev = (await owner.get(`/api/workbooks/${workbookId}`)).body.workbook.revision;
+    const allowed = await editor.post(`/api/worksheets/${sheetId}/cells/batch`).set(H).send({ baseRevision: Number(rev), clientId: 'client-c', ops: [{ sheetId, row: 1, col: 1, raw: 'ok' }] });
+    expect(allowed.status).toBe(200);
+    // The owner is never limited, and an invalid exception range is rejected.
+    expect((await owner.put(`/api/worksheets/${sheetId}/protected-ranges`).set(H).send({ items: [{ range: null, editorIds: [], exceptRanges: ['nope'] }] })).status).toBe(400);
+    await owner.put(`/api/worksheets/${sheetId}/protected-ranges`).set(H).send({ items: [] });
+  });
+  it('charts are stored with the sheet and validated', async () => {
+    const chart = { id: 'c1', type: 'column', title: 'Uji', range: 'A1:B4', headerRow: true, headerCol: true, seriesIn: 'cols', stacked: false, legend: 'bottom', row: 0, col: 3, dx: 8, dy: 8, w: 480, h: 300 };
+    const ok = await owner.patch(`/api/worksheets/${sheetId}`).set(H).send({ metadata: { charts: [chart] } });
+    expect(ok.status).toBe(200);
+    expect(ok.body.sheet.metadata.charts[0].range).toBe('A1:B4');
+    expect((await owner.patch(`/api/worksheets/${sheetId}`).set(H).send({ metadata: { charts: [{ ...chart, type: 'radar' }] } })).status).toBe(400);
+    expect((await owner.patch(`/api/worksheets/${sheetId}`).set(H).send({ metadata: { charts: [{ ...chart, w: 10 }] } })).status).toBe(400);
+    expect((await viewer.patch(`/api/worksheets/${sheetId}`).set(H).send({ metadata: { charts: [] } })).status).toBe(403);
+    await owner.patch(`/api/worksheets/${sheetId}`).set(H).send({ metadata: { charts: [] } });
+  });
   it('revoking access removes it', async () => {
     const list = await owner.get(`/api/workbooks/${workbookId}/permissions`);
     const p = list.body.permissions.find((x: { user: { email: string } }) => x.user.email === 'citra@example.test');

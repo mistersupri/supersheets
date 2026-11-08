@@ -51,6 +51,8 @@ export interface View {
 
 export interface Overlay {
   fillPreview?: RangeAddress | null;
+  /** Where dragged cells would land. */
+  movePreview?: RangeAddress | null;
   resizeGuide?: { axis: 'row' | 'col'; pos: number } | null;
   /** The header border under the pointer (it can be dragged to resize). */
   hoverEdge?: { axis: 'row' | 'col'; pos: number } | null;
@@ -97,8 +99,31 @@ function textColorFor(style: CellStyle | null, bg: string | undefined, t: Theme)
   return t.ink;
 }
 
+/** A pair of small arrows in a header where manually hidden rows or columns sit; double-click shows them again. */
+export interface HiddenMark {
+  axis: 'row' | 'col';
+  indices: number[];
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Runs of consecutive indices, e.g. [2,3,4,9] becomes [[2,3,4],[9]]. */
+function runsOf(list: number[]): number[][] {
+  const runs: number[][] = [];
+  for (const i of [...list].sort((a, b) => a - b)) {
+    const last = runs[runs.length - 1];
+    if (last && last[last.length - 1] === i - 1) last.push(i);
+    else if (!last || last[last.length - 1] !== i) runs.push([i]);
+  }
+  return runs;
+}
+
 export class Renderer {
   private measureCache = new Map<string, number>();
+  /** Hit areas of the hidden-row/column arrows from the last draw. */
+  marks: HiddenMark[] = [];
 
   constructor(private ctrl: EditorController) {}
 
@@ -279,6 +304,7 @@ export class Renderer {
     // Outline the result area of an array formula when the cursor is inside it.
     const spill = ctrl.model.engine.spillAreaAt(sheet.id, a.row, a.col);
     if (spill) paint(spill, { stroke: { color: spill.ok ? t.brand : t.danger, width: 1, dash: [3, 3] } });
+    if (overlay.movePreview) paint(overlay.movePreview, { fill: { color: t.brand, alpha: 0.1 }, stroke: { color: t.brand, width: 2, dash: [5, 3] } });
     if (overlay.fillPreview) paint(overlay.fillPreview, { stroke: { color: t.ink2, width: 1, dash: [4, 3] } });
     if (st.copyRange && st.copyRange.sheetId === sheet.id) paint(st.copyRange, { stroke: { color: t.brand, width: 1.5, dash: [5, 3] } });
 
@@ -671,11 +697,6 @@ export class Renderer {
       ctx.fillStyle = inSel ? (allRows ? t.brandInk : t.ink) : t.headerInk;
       ctx.font = `${inSel ? 600 : 500} 11px ${FONT_FAMILY}`;
       ctx.fillText(colToLetters(c), x + w / 2, HEADER_H / 2 + 0.5);
-      // Mark hidden neighbours so they can be found again.
-      if (c + 1 < cAxis.count && cAxis.hidden(c + 1)) {
-        ctx.fillStyle = t.ink2;
-        ctx.fillRect(x + w - 3, 6, 2, HEADER_H - 12);
-      }
     };
     ctx.save();
     ctx.beginPath();
@@ -703,10 +724,6 @@ export class Renderer {
       ctx.fillStyle = inSel ? (allCols ? t.brandInk : t.ink) : t.headerInk;
       ctx.font = `${inSel ? 600 : 500} 11px ${FONT_FAMILY}`;
       ctx.fillText(String(r + 1), HEADER_W / 2, y + h / 2 + 0.5);
-      if (r + 1 < rAxis.count && rAxis.hidden(r + 1)) {
-        ctx.fillStyle = t.ink2;
-        ctx.fillRect(8, y + h - 3, HEADER_W - 16, 2);
-      }
     };
     ctx.save();
     ctx.beginPath();
@@ -720,6 +737,58 @@ export class Renderer {
     ctx.clip();
     for (const r of rows) if (r < fr) drawRow(r);
     ctx.restore();
+
+    // Arrows where rows or columns were hidden by hand, so they can be found and shown again.
+    this.marks = [];
+    const arrows = (cx: number, cy: number, vertical: boolean) => {
+      ctx.fillStyle = t.ink2;
+      ctx.beginPath();
+      if (vertical) {
+        ctx.moveTo(cx, cy - 8);
+        ctx.lineTo(cx - 4, cy - 3);
+        ctx.lineTo(cx + 4, cy - 3);
+        ctx.moveTo(cx, cy + 8);
+        ctx.lineTo(cx - 4, cy + 3);
+        ctx.lineTo(cx + 4, cy + 3);
+      } else {
+        ctx.moveTo(cx - 8, cy);
+        ctx.lineTo(cx - 3, cy - 4);
+        ctx.lineTo(cx - 3, cy + 4);
+        ctx.moveTo(cx + 8, cy);
+        ctx.lineTo(cx + 3, cy - 4);
+        ctx.lineTo(cx + 3, cy + 4);
+      }
+      ctx.fill();
+    };
+    const md = sheet.metadata;
+    for (const run of runsOf(md.hiddenCols ?? [])) {
+      const next = run[run.length - 1] + 1;
+      if (next >= cAxis.count) continue;
+      const bx = colX(next);
+      const [lo, hi] = next < fc ? [HEADER_W, HEADER_W + fw] : [HEADER_W + fw, view.w];
+      if (bx < lo - 4 || bx > hi + 4) continue;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(lo, 0, hi - lo, HEADER_H);
+      ctx.clip();
+      arrows(bx, HEADER_H / 2, false);
+      ctx.restore();
+      this.marks.push({ axis: 'col', indices: run, x: bx - 10, y: 0, w: 20, h: HEADER_H });
+    }
+    for (const run of runsOf(md.hiddenRows ?? [])) {
+      const next = run[run.length - 1] + 1;
+      if (next >= rAxis.count) continue;
+      const by = rowY(next);
+      const [lo, hi] = next < fr ? [HEADER_H, HEADER_H + fh] : [HEADER_H + fh, view.h];
+      if (by < lo - 4 || by > hi + 4) continue;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, lo, HEADER_W, hi - lo);
+      ctx.clip();
+      arrows(HEADER_W / 2, by, true);
+      ctx.restore();
+      this.marks.push({ axis: 'row', indices: run, x: 0, y: by - 10, w: HEADER_W, h: 20 });
+    }
 
     // Header edges and the corner.
     ctx.fillStyle = t.line2;

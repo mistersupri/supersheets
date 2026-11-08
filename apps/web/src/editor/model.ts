@@ -257,6 +257,7 @@ function defaultMeta(key: keyof SheetMetadata): unknown {
     case 'hiddenCols':
     case 'merges':
     case 'filterViews':
+    case 'charts':
       return [];
     case 'filter':
     case 'tabColor':

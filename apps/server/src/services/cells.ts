@@ -77,6 +77,8 @@ async function checkProtection(tx: Tx, input: BatchInput, sheetIds: string[]) {
     for (const p of ranges) {
       if (p.worksheetId !== op.sheetId || p.editorIds.includes(input.userId)) continue;
       const r = p.range ? parseRangeA1(p.range) : null;
+      // Cells listed as exceptions stay editable under whole-sheet protection.
+      if (!p.range && p.exceptRanges.some((x) => { const e = parseRangeA1(x); return !!e && rangeContains(e, op.row, op.col); })) continue;
       if (!p.range || (r && rangeContains(r, op.row, op.col))) {
         throw forbidden(p.range ? `Rentang ${p.range} dilindungi` : 'Sheet ini dilindungi');
       }

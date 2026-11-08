@@ -5,7 +5,7 @@ import clsx from 'clsx';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { toast } from 'sonner';
-import { Icon } from '../components/icons';
+import { BorderGlyph, Icon } from '../components/icons';
 import { Avatar, Button, Dialog, DropdownMenu, gridFocusTarget, IconButton, MenuItem, MenuSeparator, menuItemClass, menuPopupClass, SubMenu } from '../components/ui';
 import { UserMenu } from '../components/UserMenu';
 import { api, errorMessage } from '../lib/api';
@@ -419,6 +419,9 @@ export function MenuBar() {
             Komentar
           </M>
           <MenuSeparator />
+          <M icon={<Icon.ChartColumn size={15} />} onClick={() => ctrl.insertChart()} disabled={ro}>
+            Bagan
+          </M>
           <M onClick={() => insertCheckbox(ctrl)} disabled={ro}>
             Kotak centang
           </M>
@@ -456,9 +459,9 @@ export function MenuBar() {
             </M>
           </SubMenu>
           <SubMenu icon={<Icon.AlignLeft size={15} />} label="Perataan" disabled={ro}>
-            <M onClick={() => ctrl.applyStyle({ hAlign: 'left' })}>Kiri</M>
-            <M onClick={() => ctrl.applyStyle({ hAlign: 'center' })}>Tengah</M>
-            <M onClick={() => ctrl.applyStyle({ hAlign: 'right' })}>Kanan</M>
+            <M onClick={() => ctrl.applyStyle({ hAlign: 'left' })} shortcut="Ctrl+Shift+L">Kiri</M>
+            <M onClick={() => ctrl.applyStyle({ hAlign: 'center' })} shortcut="Ctrl+Shift+E">Tengah</M>
+            <M onClick={() => ctrl.applyStyle({ hAlign: 'right' })} shortcut="Ctrl+Shift+R">Kanan</M>
             <MenuSeparator />
             <M onClick={() => ctrl.applyStyle({ vAlign: 'top' })}>Atas</M>
             <M onClick={() => ctrl.applyStyle({ vAlign: 'middle' })}>Tengah vertikal</M>
@@ -730,26 +733,32 @@ export function Toolbar() {
             ['none', 'Hapus batas'],
           ] as const
         ).map(([k, l]) => (
-          <MenuItem key={k} onClick={() => (ctrl.setBorders(k), after())}>
+          <MenuItem key={k} icon={<BorderGlyph kind={k} />} onClick={() => (ctrl.setBorders(k), after())}>
             {l}
           </MenuItem>
         ))}
         <MenuSeparator />
-        <MenuItem onClick={() => (ctrl.setBorders('outer', '#1A1E1C', 'thick'), after())}>Batas luar tebal</MenuItem>
-        <MenuItem onClick={() => (ctrl.setBorders('bottom', '#1A1E1C', 'double'), after())}>Garis ganda bawah</MenuItem>
-        <MenuItem onClick={() => (ctrl.setBorders('all', '#1A1E1C', 'dashed'), after())}>Semua batas putus-putus</MenuItem>
+        <MenuItem icon={<BorderGlyph kind="outer" />} onClick={() => (ctrl.setBorders('outer', '#1A1E1C', 'thick'), after())}>
+          Batas luar tebal
+        </MenuItem>
+        <MenuItem icon={<BorderGlyph kind="bottom" />} onClick={() => (ctrl.setBorders('bottom', '#1A1E1C', 'double'), after())}>
+          Garis ganda bawah
+        </MenuItem>
+        <MenuItem icon={<BorderGlyph kind="all" />} onClick={() => (ctrl.setBorders('all', '#1A1E1C', 'dashed'), after())}>
+          Semua batas putus-putus
+        </MenuItem>
       </DropdownMenu>
       <IconButton label="Gabungkan sel" onClick={() => (ctrl.mergeAt(ctrl.s.selection.anchor.row, ctrl.s.selection.anchor.col) ? ctrl.unmerge() : ctrl.merge(), after())} disabled={ro}>
         <Icon.Merge />
       </IconButton>
       <Divider />
-      <IconButton label="Rata kiri" active={st.hAlign === 'left'} onClick={() => (ctrl.applyStyle({ hAlign: 'left' }), after())} disabled={ro}>
+      <IconButton label="Rata kiri" shortcut="Ctrl+Shift+L" active={st.hAlign === 'left'} onClick={() => (ctrl.applyStyle({ hAlign: 'left' }), after())} disabled={ro}>
         <Icon.AlignLeft />
       </IconButton>
-      <IconButton label="Rata tengah" active={st.hAlign === 'center'} onClick={() => (ctrl.applyStyle({ hAlign: 'center' }), after())} disabled={ro}>
+      <IconButton label="Rata tengah" shortcut="Ctrl+Shift+E" active={st.hAlign === 'center'} onClick={() => (ctrl.applyStyle({ hAlign: 'center' }), after())} disabled={ro}>
         <Icon.AlignCenter />
       </IconButton>
-      <IconButton label="Rata kanan" active={st.hAlign === 'right'} onClick={() => (ctrl.applyStyle({ hAlign: 'right' }), after())} disabled={ro}>
+      <IconButton label="Rata kanan" shortcut="Ctrl+Shift+R" active={st.hAlign === 'right'} onClick={() => (ctrl.applyStyle({ hAlign: 'right' }), after())} disabled={ro}>
         <Icon.AlignRight />
       </IconButton>
       <DropdownMenu
@@ -784,6 +793,9 @@ export function Toolbar() {
         ))}
       </DropdownMenu>
       <Divider />
+      <IconButton label="Sisipkan bagan" onClick={() => ctrl.insertChart()} disabled={ro}>
+        <Icon.ChartColumn />
+      </IconButton>
       <IconButton label="Sisipkan tautan" shortcut="Ctrl+K" onClick={() => ctrl.set({ dialog: 'link' })} disabled={ro}>
         <Icon.Link />
       </IconButton>

@@ -104,7 +104,34 @@ export interface FilterView {
   filter: SheetFilter;
 }
 
+export type ChartType = 'column' | 'bar' | 'line' | 'area' | 'pie' | 'scatter';
+
+/** A chart floating over a sheet. Its data is read live from `range`. */
+export interface ChartSpec {
+  id: string;
+  type: ChartType;
+  title: string;
+  /** A1 range on the same sheet. */
+  range: string;
+  /** The first row of the range holds series names. */
+  headerRow: boolean;
+  /** The first column holds the category labels (the x values for scatter). */
+  headerCol: boolean;
+  /** Series run down columns (default) or across rows. */
+  seriesIn: 'cols' | 'rows';
+  stacked: boolean;
+  legend: 'none' | 'top' | 'bottom' | 'right';
+  /** Top-left anchor cell, the offset inside it, and the size in pixels. */
+  row: number;
+  col: number;
+  dx: number;
+  dy: number;
+  w: number;
+  h: number;
+}
+
 export interface SheetMetadata {
+  charts?: ChartSpec[];
   colWidths?: Record<number, number>;
   rowHeights?: Record<number, number>;
   hiddenRows?: number[];
@@ -145,6 +172,8 @@ export interface ProtectedRangeRecord {
   range: string | null;
   description?: string | null;
   editorIds: string[];
+  /** Only with `range: null`: ranges that stay editable although the sheet is protected. */
+  exceptRanges?: string[];
 }
 
 export interface PresenceUser {

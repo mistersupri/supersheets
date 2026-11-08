@@ -80,7 +80,7 @@ export function AssistPanel({
               id={`${id}-${i}`}
               role="option"
               aria-selected={i === active}
-              className={clsx('cursor-default px-3 py-1.5', i === active && 'bg-brand-soft')}
+              className={clsx('cursor-pointer px-3 py-1.5', i === active && 'bg-brand-soft')}
               onPointerDown={(e) => {
                 e.preventDefault();
                 onPick(f.name);

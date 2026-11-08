@@ -8,6 +8,7 @@ import {
   formatValue,
   listFunctions,
   parseRangeA1,
+  type ChartSpec,
   ProtectedRangeRecord,
   RuleRecord,
   ValidationRule,
@@ -20,10 +21,13 @@ import { toast } from 'sonner';
 import { Icon } from '../components/icons';
 import { Avatar, Button, Checkbox, Dialog, Field, IconButton, Input, Select, Spinner } from '../components/ui';
 import { api, errorMessage } from '../lib/api';
+import { setPicking } from '../lib/picking';
 import { useMe } from '../lib/auth';
 import { dateTime } from '../lib/format';
 import { clipboardAction, insertCheckbox, useWorkbookActions } from './chrome';
 import { SuggestChips } from './CellEditor';
+import { ChartSvg } from './ChartSvg';
+import { CHART_TYPES, readChart } from './charts';
 import { ColorPicker } from './ColorPicker';
 import { useCtrl, useEditor } from './context';
 import { roleLabel } from './controller';
@@ -48,6 +52,9 @@ export function EditorDialogs() {
       <ConditionalDialog />
       <ValidationDialog />
       <ProtectDialog />
+      <ConfirmDialog />
+      <ChartDialog />
+      <RangePickBar />
       <SortDialog />
       <SplitDialog />
       <DedupeDialog />
@@ -62,6 +69,210 @@ export function EditorDialogs() {
       <MobileFormatSheet />
       <MobileMenuSheet />
     </>
+  );
+}
+
+// ---------- charts ----------
+
+const CHART_ICONS = { column: Icon.ChartColumn, bar: Icon.ChartBar, line: Icon.ChartLine, area: Icon.ChartArea, pie: Icon.ChartPie, scatter: Icon.ChartScatter } as const;
+
+function ChartDialog() {
+  const { open, close, ctrl } = useDialog('chart');
+  const draft = useEditor((s) => s.chartDraft);
+  const [spec, setSpec] = useState<ChartSpec | null>(null);
+  useEffect(() => {
+    if (open && draft) setSpec(structuredClone(draft.spec));
+  }, [open, draft]);
+  if (!spec) return <Dialog open={false} onOpenChange={() => undefined} title="Bagan" />;
+  const set = (p: Partial<ChartSpec>) => setSpec({ ...spec, ...p });
+  const valid = !!parseRangeA1(spec.range);
+  const data = readChart(spec, (r, c) => ctrl.model.value(ctrl.s.activeSheetId, r, c));
+  const stackable = spec.type === 'column' || spec.type === 'bar' || spec.type === 'area';
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) {
+          ctrl.set({ chartDraft: null });
+          close();
+        }
+      }}
+      title={draft?.isNew ? 'Bagan baru' : 'Ubah bagan'}
+      width={720}
+      footer={
+        <>
+          <Button
+            onClick={() => {
+              ctrl.set({ chartDraft: null });
+              close();
+            }}
+          >
+            Batal
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!valid || !data.valid}
+            onClick={() => {
+              ctrl.saveChartDraft(spec);
+              close();
+            }}
+          >
+            <Icon.Check /> {draft?.isNew ? 'Sisipkan' : 'Simpan'}
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-5 md:grid-cols-[250px_1fr]">
+        <div className="flex flex-col gap-4">
+          <fieldset>
+            <legend className="mb-1.5 text-[13px] font-medium">Jenis</legend>
+            <div className="grid grid-cols-3 gap-1.5">
+              {CHART_TYPES.map((t) => {
+                const I = CHART_ICONS[t.type];
+                return (
+                  <button
+                    key={t.type}
+                    type="button"
+                    aria-pressed={spec.type === t.type}
+                    onClick={() => set({ type: t.type })}
+                    className={clsx('press flex flex-col items-center gap-1 rounded-md border px-1 py-2 text-xs', spec.type === t.type ? 'border-brand bg-brand-soft text-ink' : 'border-line text-ink-2 hover:bg-surface-2')}
+                  >
+                    <I size={20} />
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+          <Field label="Judul" htmlFor="ch-title">
+            <Input id="ch-title" value={spec.title} maxLength={200} onChange={(e) => set({ title: e.target.value })} />
+          </Field>
+          <Field label="Rentang data" htmlFor="ch-range" error={valid ? (data.valid ? undefined : 'Tidak ada angka di rentang ini.') : 'Contoh: A1:C10'}>
+            <RangeInput id="ch-range" value={spec.range} onChange={(v) => set({ range: v })} />
+          </Field>
+          <div className="flex flex-col">
+            <Checkbox label="Baris pertama berisi nama seri" checked={spec.headerRow} onChange={(v) => set({ headerRow: v })} />
+            <Checkbox label="Kolom pertama berisi label" checked={spec.headerCol} onChange={(v) => set({ headerCol: v })} />
+            {stackable && <Checkbox label="Ditumpuk" checked={spec.stacked} onChange={(v) => set({ stacked: v })} />}
+          </div>
+          <Field label="Seri berada di" htmlFor="ch-in">
+            <Select id="ch-in" value={spec.seriesIn} onChange={(e) => set({ seriesIn: e.target.value as ChartSpec['seriesIn'] })}>
+              <option value="cols">Kolom</option>
+              <option value="rows">Baris</option>
+            </Select>
+          </Field>
+          <Field label="Legenda" htmlFor="ch-legend">
+            <Select id="ch-legend" value={spec.legend} onChange={(e) => set({ legend: e.target.value as ChartSpec['legend'] })}>
+              <option value="bottom">Bawah</option>
+              <option value="right">Kanan</option>
+              <option value="top">Atas</option>
+              <option value="none">Tanpa legenda</option>
+            </Select>
+          </Field>
+        </div>
+        <div>
+          <p className="mb-1.5 text-[13px] font-medium">Pratinjau</p>
+          <div className="rounded-md border border-line bg-surface" style={{ height: 320 }}>
+            <ChartSvg spec={spec} data={data} w={420} h={318} />
+          </div>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+// ---------- range picking ----------
+
+/** A range field with a button to drag the range on the sheet instead of typing it. */
+function RangeInput({ value, onChange, id, className, autoFocus }: { value: string; onChange: (v: string) => void; id: string; className?: string; autoFocus?: boolean }) {
+  const ctrl = useCtrl();
+  return (
+    <div className="flex gap-1.5">
+      <Input id={id} className={clsx('addr', className)} value={value} onChange={(e) => onChange(e.target.value.toUpperCase())} autoFocus={autoFocus} />
+      <button
+        type="button"
+        aria-label="Pilih rentang di sheet"
+        title="Pilih rentang di sheet"
+        className="press inline-flex h-9 min-w-9 shrink-0 items-center justify-center rounded-md border border-line-2 text-ink-2 hover:bg-surface-2 max-md:h-11 max-md:min-w-11"
+        onClick={() => ctrl.pickRange(value, onChange)}
+      >
+        <Icon.PickRange />
+      </button>
+    </div>
+  );
+}
+
+/** While a dialog field is picking, the dialog steps aside and this bar shows the live range. */
+function RangePickBar() {
+  const ctrl = useCtrl();
+  const pick = useEditor((s) => s.rangePick);
+  useEditor((s) => s.selection);
+  useEffect(() => {
+    if (!pick) return;
+    setPicking(true);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' && e.key !== 'Enter') return;
+      e.preventDefault();
+      e.stopPropagation();
+      ctrl.finishRangePick(e.key === 'Enter');
+      window.dispatchEvent(new Event('opensheet:focus-grid'));
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      setPicking(false);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }, [pick, ctrl]);
+  if (!pick) return null;
+  return (
+    <div role="status" className="fixed bottom-6 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-3 rounded-lg border border-line bg-surface py-2 pr-2 pl-4 shadow-pop">
+      <Icon.PickRange className="text-brand" />
+      <span className="text-sm text-ink-2 max-sm:hidden">Seret sel untuk memilih</span>
+      <span className="addr min-w-16 text-sm font-medium text-ink">{formatRangeA1(ctrl.selectionRange())}</span>
+      <Button size="sm" onClick={() => ctrl.finishRangePick(false)}>
+        <Icon.Close size={14} /> Batal
+      </Button>
+      <Button size="sm" variant="primary" onClick={() => ctrl.finishRangePick(true)}>
+        <Icon.Check size={14} /> Pilih
+      </Button>
+    </div>
+  );
+}
+
+// ---------- confirm ----------
+
+function ConfirmDialog() {
+  const ctrl = useCtrl();
+  const confirm = useEditor((s) => s.confirm);
+  const close = () => {
+    ctrl.set({ confirm: null });
+    window.dispatchEvent(new Event('opensheet:focus-grid'));
+  };
+  return (
+    <Dialog
+      open={!!confirm}
+      onOpenChange={(o) => !o && close()}
+      title={confirm?.title ?? ''}
+      description={confirm?.message}
+      width={420}
+      footer={
+        <>
+          <Button onClick={close}>Batal</Button>
+          <Button
+            variant="primary"
+            autoFocus
+            onClick={() => {
+              const go = confirm?.onConfirm;
+              ctrl.set({ confirm: null });
+              go?.();
+              window.dispatchEvent(new Event('opensheet:focus-grid'));
+            }}
+          >
+            {confirm?.action}
+          </Button>
+        </>
+      }
+    />
   );
 }
 
@@ -545,7 +756,7 @@ function ConditionalDialog() {
             <li key={i} className="rounded-md border border-line p-3">
               <div className="flex flex-wrap items-end gap-2">
                 <Field label="Rentang" htmlFor={`cf-r-${i}`} error={parseRangeA1(it.range) ? undefined : 'Contoh: B2:B100'}>
-                  <Input id={`cf-r-${i}`} className="addr w-32" value={it.range} onChange={(e) => update(i, { range: e.target.value.toUpperCase() })} />
+                  <RangeInput id={`cf-r-${i}`} className="w-32" value={it.range} onChange={(v) => update(i, { range: v })} />
                 </Field>
                 <Field label="Jika sel" htmlFor={`cf-op-${i}`}>
                   <Select id={`cf-op-${i}`} value={it.rule.op} onChange={(e) => updateRule(i, { op: e.target.value as ConditionOp })}>
@@ -678,7 +889,7 @@ function ValidationDialog() {
     >
       <div className="flex flex-col gap-3">
         <Field label="Rentang" htmlFor="dv-range">
-          <Input id="dv-range" className="addr" value={range} onChange={(e) => setRange(e.target.value.toUpperCase())} />
+          <RangeInput id="dv-range" value={range} onChange={setRange} />
         </Field>
         <Field label="Kriteria" htmlFor="dv-kind">
           <Select id="dv-kind" value={kind} onChange={(e) => setKind(e.target.value as ValidationRule['kind'])}>
@@ -760,7 +971,7 @@ function ProtectDialog() {
       footer={
         <>
           <Button onClick={close}>Batal</Button>
-          <Button variant="primary" onClick={save} disabled={busy || items.some((i) => i.range !== null && !parseRangeA1(i.range))}>
+          <Button variant="primary" onClick={save} disabled={busy || items.some((i) => (i.range !== null && !parseRangeA1(i.range)) || (i.exceptRanges ?? []).some((x) => !parseRangeA1(x)))}>
             Simpan
           </Button>
         </>
@@ -772,20 +983,45 @@ function ProtectDialog() {
           <li key={i} className="rounded-md border border-line p-3">
             <div className="flex flex-wrap items-end gap-2">
               <Field label="Cakupan" htmlFor={`pr-k-${i}`}>
-                <Select id={`pr-k-${i}`} value={it.range === null ? 'sheet' : 'range'} onChange={(e) => update(i, { range: e.target.value === 'sheet' ? null : formatRangeA1(ctrl.selectionRange()) })}>
+                <Select id={`pr-k-${i}`} value={it.range === null ? 'sheet' : 'range'} onChange={(e) => update(i, e.target.value === 'sheet' ? { range: null, exceptRanges: it.exceptRanges ?? [] } : { range: formatRangeA1(ctrl.selectionRange()) })}>
                   <option value="range">Rentang</option>
                   <option value="sheet">Seluruh sheet</option>
                 </Select>
               </Field>
               {it.range !== null && (
                 <Field label="Rentang" htmlFor={`pr-r-${i}`}>
-                  <Input id={`pr-r-${i}`} className="addr w-32" value={it.range} onChange={(e) => update(i, { range: e.target.value.toUpperCase() })} />
+                  <RangeInput id={`pr-r-${i}`} className="w-32" value={it.range} onChange={(v) => update(i, { range: v })} />
                 </Field>
               )}
               <Field label="Keterangan" htmlFor={`pr-d-${i}`}>
                 <Input id={`pr-d-${i}`} value={it.description ?? ''} onChange={(e) => update(i, { description: e.target.value })} />
               </Field>
             </div>
+            {it.range === null && (
+              <div className="mt-3">
+                <p className="text-xs font-medium text-ink">Kecuali rentang ini (tetap bisa diedit semua orang)</p>
+                {(it.exceptRanges ?? []).length === 0 && <p className="text-xs text-ink-2">Tidak ada pengecualian: seluruh sheet terkunci.</p>}
+                <ul className="mt-1.5 flex flex-col gap-1.5">
+                  {(it.exceptRanges ?? []).map((x, n) => (
+                    <li key={n} className="flex items-center gap-1.5">
+                      <RangeInput id={`pr-x-${i}-${n}`} className="w-36" value={x} onChange={(v) => update(i, { exceptRanges: (it.exceptRanges ?? []).map((y, m) => (m === n ? v : y)) })} />
+                      {!parseRangeA1(x) && <span className="text-xs text-danger">Tidak valid</span>}
+                      <button
+                        type="button"
+                        aria-label={`Hapus pengecualian ${x}`}
+                        className="press inline-flex size-8 items-center justify-center rounded-md text-ink-2 hover:bg-surface-2 max-md:size-11"
+                        onClick={() => update(i, { exceptRanges: (it.exceptRanges ?? []).filter((_, m) => m !== n) })}
+                      >
+                        <Icon.Close size={14} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <Button size="sm" className="mt-2" onClick={() => update(i, { exceptRanges: [...(it.exceptRanges ?? []), formatRangeA1(ctrl.selectionRange())] })}>
+                  <Icon.Unlock size={14} /> Kecualikan rentang terpilih
+                </Button>
+              </div>
+            )}
             <p className="mt-3 text-xs font-medium text-ink">Editor yang tetap diizinkan</p>
             {editors.length === 0 ? (
               <p className="text-xs text-ink-2">Tidak ada editor lain di workbook ini.</p>
@@ -807,9 +1043,14 @@ function ProtectDialog() {
           </li>
         ))}
       </ul>
-      <Button className="mt-4" onClick={() => setItems([...items, { id: '', range: formatRangeA1(ctrl.selectionRange()), description: '', editorIds: [] }])}>
-        <Icon.Lock /> Lindungi rentang terpilih
-      </Button>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button onClick={() => setItems([...items, { id: '', range: formatRangeA1(ctrl.selectionRange()), description: '', editorIds: [] }])}>
+          <Icon.Lock /> Lindungi rentang terpilih
+        </Button>
+        <Button disabled={items.some((i) => i.range === null)} onClick={() => setItems([...items, { id: '', range: null, description: '', editorIds: [], exceptRanges: [] }])}>
+          <Icon.Shield /> Lindungi seluruh sheet
+        </Button>
+      </div>
     </Dialog>
   );
 }
@@ -1022,6 +1263,7 @@ const SHORTCUTS: [string, string][] = [
   ['Ctrl + Z / Y', 'Urungkan / ulangi'],
   ['Ctrl + B / I / U', 'Tebal / miring / garis bawah'],
   ['Ctrl + 5', 'Coret'],
+  ['Ctrl + Shift + L / E / R', 'Rata kiri / tengah / kanan'],
   ['Ctrl + A', 'Pilih semua'],
   ['Ctrl + Spasi / Shift + Spasi', 'Pilih kolom / baris'],
   ['Ctrl + F / H', 'Cari / cari dan ganti'],
@@ -1201,7 +1443,7 @@ function CreateFilterDialog() {
           hint="Baris pertama rentang menjadi judul kolom. Rentang disorot di sheet."
           error={text && !range ? 'Rentang tidak valid. Contoh: A1:D20' : tooSmall ? 'Rentang minimal dua baris: judul dan satu baris data.' : undefined}
         >
-          <Input id="flt-range" className="addr" value={text} onChange={(e) => setText(e.target.value)} autoFocus />
+          <RangeInput id="flt-range" value={text} onChange={setText} autoFocus />
         </Field>
         <fieldset className="flex flex-col gap-2">
           <legend className="mb-1 text-[13px] font-medium">Siapa yang terpengaruh</legend>

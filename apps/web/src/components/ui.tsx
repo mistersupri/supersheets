@@ -3,6 +3,7 @@ import { Menu as BMenu } from '@base-ui/react/menu';
 import { Tooltip as BTooltip } from '@base-ui/react/tooltip';
 import clsx from 'clsx';
 import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react';
+import { usePicking } from '../lib/picking';
 import { Icon } from './icons';
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger';
@@ -162,8 +163,10 @@ export function Dialog({
   footer?: ReactNode;
   width?: number;
 }) {
+  const picking = usePicking();
   return (
-    <BDialog.Root open={open} onOpenChange={onOpenChange}>
+    // While a field picks a range on the sheet the popup steps aside; the parent keeps its draft state.
+    <BDialog.Root open={open && !picking} onOpenChange={onOpenChange}>
       <BDialog.Portal>
         <BDialog.Backdrop className="scrim fixed inset-0 z-40 bg-[var(--scrim)]" />
         <BDialog.Popup
@@ -193,7 +196,7 @@ export const menuPopupClass =
   'pop min-w-52 max-h-[var(--available-height)] overflow-y-auto rounded-md border border-line bg-surface py-1 text-sm text-ink shadow-pop outline-none scroll-thin';
 
 export const menuItemClass =
-  'flex min-h-8 cursor-default items-center gap-3 px-3 py-1.5 outline-none select-none data-highlighted:bg-brand-soft data-disabled:opacity-45 max-md:min-h-11';
+  'flex min-h-8 cursor-pointer items-center gap-3 px-3 py-1.5 outline-none select-none data-highlighted:bg-brand-soft data-disabled:cursor-not-allowed data-disabled:opacity-45 max-md:min-h-11';
 
 export function MenuItem({ children, shortcut, onClick, disabled, danger, icon }: { children: ReactNode; shortcut?: string; onClick?: () => void; disabled?: boolean; danger?: boolean; icon?: ReactNode }) {
   return (

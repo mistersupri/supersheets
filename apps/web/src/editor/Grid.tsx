@@ -12,12 +12,15 @@ import { displayText } from './controller';
 import { FilterPopover, ListPopover } from './GridPopovers';
 import { HEADER_H, HEADER_W } from './geometry';
 import { readTheme, Renderer, type Theme } from './render';
+import { ChartLayer } from './ChartLayer';
 
 type Drag =
   | { kind: 'select'; pointerId: number }
   | { kind: 'rows' | 'cols'; anchor: number; pointerId: number }
   | { kind: 'resize'; axis: 'row' | 'col'; index: number; start: number; startSize: number; pointerId: number; indices: number[] }
   | { kind: 'fill'; src: RangeAddress; pointerId: number }
+  | { kind: 'moveLines'; axis: 'row' | 'col'; a: number; b: number; grabbed: number; start: number; started: boolean; to: number | null; pointerId: number }
+  | { kind: 'moveCells'; src: RangeAddress; row: number; col: number; x: number; y: number; started: boolean; dr: number; dc: number; pointerId: number }
   | { kind: 'touch'; x: number; y: number; moved: boolean; pointerId: number }
   | { kind: 'point'; anchor: { row: number; col: number }; pointerId: number; insertAt: number; insertLen: number }
   | { kind: 'open'; run: () => void; pointerId: number };
@@ -38,6 +41,7 @@ export function Grid() {
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [scroll, setScroll] = useState({ left: 0, top: 0 });
   const [fillPreview, setFillPreview] = useState<RangeAddress | null>(null);
+  const [movePreview, setMovePreview] = useState<RangeAddress | null>(null);
   const [resizeGuide, setResizeGuide] = useState<{ axis: 'row' | 'col'; pos: number } | null>(null);
   const [listCell, setListCell] = useState<{ row: number; col: number } | null>(null);
   const [filterCol, setFilterCol] = useState<number | null>(null);
@@ -93,6 +97,7 @@ export function Grid() {
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       rendererRef.current.draw(g, { w, h, scrollLeft: scrollEl.scrollLeft, scrollTop: scrollEl.scrollTop }, themeRef.current, {
         fillPreview,
+        movePreview,
         resizeGuide,
         hoverEdge,
         handleHover,
@@ -100,7 +105,7 @@ export function Grid() {
         presenceColors,
       });
     });
-  }, [ctrl, fillPreview, resizeGuide, hoverEdge, handleHover, refHighlights, presenceColors]);
+  }, [ctrl, fillPreview, movePreview, resizeGuide, hoverEdge, handleHover, refHighlights, presenceColors]);
 
   useEffect(() => {
     draw();
@@ -279,6 +284,7 @@ export function Grid() {
   }
 
   const onPointerDown = (e: React.PointerEvent) => {
+    if (ctrl.s.chartSelected) ctrl.set({ chartSelected: null });
     if (e.button === 2) {
       // Right click targets what is under the pointer; the selection follows unless it already covers it.
       const { x, y } = local(e);
@@ -317,6 +323,9 @@ export function Grid() {
       return;
     }
 
+    // The arrows for hidden rows or columns act on double-click only; a single click leaves the selection alone.
+    if (markAt(x, y)) return;
+
     if (y < HEADER_H) {
       const c = hitCol(x);
       const edge = liveColX(c) + cols.size(c);
@@ -327,6 +336,12 @@ export function Grid() {
         const indices = r.r1 === 0 && r.r2 >= rows.count - 1 && idx >= r.c1 && idx <= r.c2 ? range(r.c1, r.c2) : [idx];
         dragRef.current = { kind: 'resize', axis: 'col', index: idx, start: x, startSize: cols.size(idx), pointerId: e.pointerId, indices };
         setResizeGuide({ axis: 'col', pos: liveColX(idx) + cols.size(idx) });
+        el.setPointerCapture(e.pointerId);
+        return;
+      }
+      const lines = !touch && !e.shiftKey ? movableLines('col') : null;
+      if (lines && c >= lines.a && c <= lines.b) {
+        dragRef.current = { kind: 'moveLines', axis: 'col', a: lines.a, b: lines.b, grabbed: c, start: x, started: false, to: null, pointerId: e.pointerId };
         el.setPointerCapture(e.pointerId);
         return;
       }
@@ -349,6 +364,12 @@ export function Grid() {
         const indices = sel.c1 === 0 && sel.c2 >= cols.count - 1 && idx >= sel.r1 && idx <= sel.r2 ? range(sel.r1, sel.r2) : [idx];
         dragRef.current = { kind: 'resize', axis: 'row', index: idx, start: y, startSize: rows.size(idx), pointerId: e.pointerId, indices };
         setResizeGuide({ axis: 'row', pos: liveRowY(idx) + rows.size(idx) });
+        el.setPointerCapture(e.pointerId);
+        return;
+      }
+      const lines = !touch && !e.shiftKey ? movableLines('row') : null;
+      if (lines && r >= lines.a && r <= lines.b) {
+        dragRef.current = { kind: 'moveLines', axis: 'row', a: lines.a, b: lines.b, grabbed: r, start: y, started: false, to: null, pointerId: e.pointerId };
         el.setPointerCapture(e.pointerId);
         return;
       }
@@ -387,6 +408,13 @@ export function Grid() {
     const hy = liveRowY(sel.r2) + rows.size(sel.r2);
     if (ctrl.s.can.edit && !ctrl.s.editing && Math.abs(x - hx) <= HANDLE && Math.abs(y - hy) <= HANDLE) {
       dragRef.current = { kind: 'fill', src: sel, pointerId: e.pointerId };
+      el.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // The outline of the selection is a grip: dragging it moves the cells.
+    if (!e.shiftKey && onSelectionBorder(x, y)) {
+      dragRef.current = { kind: 'moveCells', src: sel, row, col, x, y, started: false, dr: 0, dc: 0, pointerId: e.pointerId };
       el.setPointerCapture(e.pointerId);
       return;
     }
@@ -447,27 +475,31 @@ export function Grid() {
       let edge: { axis: 'row' | 'col'; pos: number } | null = null;
       let onHandle = false;
       let next = 'default';
-      if (y < HEADER_H && x > HEADER_W && ctrl.s.can.edit) {
+      if (markAt(x, y)) {
+        next = ctrl.s.can.edit ? 'pointer' : 'default';
+      } else if (y < HEADER_H && x > HEADER_W && ctrl.s.can.edit) {
         const c = hitCol(x);
         const right = liveColX(c) + cols.size(c);
         const left = liveColX(c);
         if (Math.abs(x - right) <= EDGE) edge = { axis: 'col', pos: right };
         else if (Math.abs(x - left) <= EDGE && c > 0) edge = { axis: 'col', pos: left };
-        next = edge ? 'col-resize' : 'default';
+        const lines = movableLines('col');
+        next = edge ? 'col-resize' : lines && c >= lines.a && c <= lines.b ? 'grab' : 'pointer';
       } else if (x < HEADER_W && y > HEADER_H && ctrl.s.can.edit) {
         const r = hitRow(y);
         const bottom = liveRowY(r) + rows.size(r);
         const top = liveRowY(r);
         if (Math.abs(y - bottom) <= EDGE) edge = { axis: 'row', pos: bottom };
         else if (Math.abs(y - top) <= EDGE && r > 0) edge = { axis: 'row', pos: top };
-        next = edge ? 'row-resize' : 'default';
+        const lines = movableLines('row');
+        next = edge ? 'row-resize' : lines && r >= lines.a && r <= lines.b ? 'grab' : 'pointer';
       } else if (x > HEADER_W && y > HEADER_H) {
         const sel = ctrl.selectionRange();
         const hx = liveColX(sel.c2) + cols.size(sel.c2);
         const hy = liveRowY(sel.r2) + rows.size(sel.r2);
         onHandle = ctrl.s.can.edit && !ctrl.s.editing && Math.abs(x - hx) <= HANDLE && Math.abs(y - hy) <= HANDLE;
         const link = ctrl.model.style(ctrl.s.activeSheetId, hitRow(y), hitCol(x))?.link;
-        next = onHandle ? 'crosshair' : link ? 'pointer' : 'cell';
+        next = onHandle ? 'crosshair' : onSelectionBorder(x, y) ? 'grab' : link ? 'pointer' : 'cell';
       }
       setCursor((c) => (c === next ? c : next));
       setHoverEdge((cur) => (cur?.axis === edge?.axis && cur?.pos === edge?.pos ? cur : edge));
@@ -498,7 +530,31 @@ export function Grid() {
     } else stopAutoScroll();
     const row = hitRow(Math.max(HEADER_H + 1, Math.min(y, el.clientHeight - 1)));
     const col = hitCol(Math.max(HEADER_W + 1, Math.min(x, el.clientWidth - 1)));
-    if (d.kind === 'select') ctrl.select(ctrl.s.selection.anchor, { row, col });
+    if (d.kind === 'moveLines') {
+      const pos = d.axis === 'col' ? x : y;
+      if (!d.started && Math.abs(pos - d.start) < 5) return;
+      if (!d.started) {
+        d.started = true;
+        setCursor('grabbing');
+      }
+      const to = dropIndex(d.axis, Math.max(d.axis === 'col' ? HEADER_W + 1 : HEADER_H + 1, pos));
+      d.to = to;
+      const noop = to >= d.a && to <= d.b + 1;
+      const count = d.axis === 'col' ? cols.count : rows.count;
+      const at = d.axis === 'col' ? (to >= count ? liveColX(count - 1) + cols.size(count - 1) : liveColX(to)) : to >= count ? liveRowY(count - 1) + rows.size(count - 1) : liveRowY(to);
+      setResizeGuide(noop ? null : { axis: d.axis, pos: at });
+    } else if (d.kind === 'moveCells') {
+      if (!d.started && Math.hypot(x - d.x, y - d.y) < 5) return;
+      if (!d.started) {
+        d.started = true;
+        setCursor('grabbing');
+      }
+      const dr = Math.max(row - d.row, -d.src.r1);
+      const dc = Math.max(col - d.col, -d.src.c1);
+      d.dr = dr;
+      d.dc = dc;
+      setMovePreview(dr || dc ? { r1: d.src.r1 + dr, r2: d.src.r2 + dr, c1: d.src.c1 + dc, c2: d.src.c2 + dc } : null);
+    } else if (d.kind === 'select') ctrl.select(ctrl.s.selection.anchor, { row, col });
     else if (d.kind === 'cols') ctrl.select({ row: 0, col: d.anchor }, { row: rows.count - 1, col });
     else if (d.kind === 'rows') ctrl.select({ row: d.anchor, col: 0 }, { row, col: cols.count - 1 });
     else if (d.kind === 'point') {
@@ -564,6 +620,25 @@ export function Grid() {
       if (Math.abs(delta) >= 2) ctrl.resize(d.axis, d.indices, d.startSize + delta);
       return;
     }
+    if (d.kind === 'moveLines') {
+      setResizeGuide(null);
+      setCursor('default');
+      const { rows, cols } = ctrl.axes();
+      if (d.started && d.to !== null) ctrl.moveLines(d.axis, d.a, d.b, d.to);
+      else if (!d.started) {
+        // A plain click on an already selected header selects just that one.
+        if (d.axis === 'col') ctrl.select({ row: 0, col: d.grabbed }, { row: rows.count - 1, col: d.grabbed });
+        else ctrl.select({ row: d.grabbed, col: 0 }, { row: d.grabbed, col: cols.count - 1 });
+      }
+      return;
+    }
+    if (d.kind === 'moveCells') {
+      setMovePreview(null);
+      setCursor('cell');
+      if (d.started) ctrl.moveCells(d.dr, d.dc);
+      else ctrl.select({ row: d.row, col: d.col });
+      return;
+    }
     if (d.kind === 'fill') {
       if (fillPreview) ctrl.fill(d.src, fillPreview);
       setFillPreview(null);
@@ -577,9 +652,62 @@ export function Grid() {
     }
   };
 
+  /** The whole rows or columns selected, when a drag from their header should move them. */
+  const movableLines = (axis: 'row' | 'col') => {
+    if (!ctrl.s.can.edit || ctrl.s.editing) return null;
+    const { rows, cols } = ctrl.axes();
+    const r = ctrl.selectionRange();
+    const allRows = r.r1 === 0 && r.r2 >= rows.count - 1;
+    const allCols = r.c1 === 0 && r.c2 >= cols.count - 1;
+    if (allRows && allCols) return null;
+    if (axis === 'col' && allRows) return { a: r.c1, b: r.c2 };
+    if (axis === 'row' && allCols) return { a: r.r1, b: r.r2 };
+    return null;
+  };
+
+  /** True when (x, y) is on the outline of the selected cells, which can be dragged to move them. */
+  const onSelectionBorder = (x: number, y: number) => {
+    if (!ctrl.s.can.edit || ctrl.s.editing || x <= HEADER_W || y <= HEADER_H) return false;
+    const { rows, cols } = ctrl.axes();
+    const s = ctrl.selectionRange();
+    if ((s.r1 === 0 && s.r2 >= rows.count - 1) || (s.c1 === 0 && s.c2 >= cols.count - 1)) return false;
+    const T = 3;
+    const left = liveColX(s.c1);
+    const right = liveColX(s.c2) + cols.size(s.c2);
+    const top = liveRowY(s.r1);
+    const bottom = liveRowY(s.r2) + rows.size(s.r2);
+    const hx = right;
+    const hy = bottom;
+    if (Math.abs(x - hx) <= HANDLE && Math.abs(y - hy) <= HANDLE) return false;
+    const inX = x >= left - T && x <= right + T;
+    const inY = y >= top - T && y <= bottom + T;
+    const nearV = Math.abs(x - left) <= T || Math.abs(x - right) <= T;
+    const nearH = Math.abs(y - top) <= T || Math.abs(y - bottom) <= T;
+    return (nearV && inY) || (nearH && inX);
+  };
+
+  /** Where a dragged block of rows or columns would be dropped: the boundary closest to the pointer. */
+  const dropIndex = (axis: 'row' | 'col', pos: number) => {
+    const { rows, cols } = ctrl.axes();
+    if (axis === 'col') {
+      const c = hitCol(pos);
+      return pos < liveColX(c) + cols.size(c) / 2 ? c : c + 1;
+    }
+    const r = hitRow(pos);
+    return pos < liveRowY(r) + rows.size(r) / 2 ? r : r + 1;
+  };
+
+  /** The hidden-row/column arrows under the pointer, if any. */
+  const markAt = (x: number, y: number) => rendererRef.current.marks.find((m) => x >= m.x && x <= m.x + m.w && y >= m.y && y <= m.y + m.h && (m.axis === 'col' ? y < HEADER_H : x < HEADER_W));
+
   const onDoubleClick = (e: React.MouseEvent) => {
     const { x, y } = local(e);
     const { rows, cols } = ctrl.axes();
+    const mark = ctrl.s.can.edit ? markAt(x, y) : undefined;
+    if (mark) {
+      ctrl.setHidden(mark.axis, mark.indices, false);
+      return;
+    }
     if (y < HEADER_H && x > HEADER_W && ctrl.s.can.edit) {
       const c = hitCol(x);
       const edge = liveColX(c) + cols.size(c);
@@ -626,6 +754,10 @@ export function Grid() {
       e.stopPropagation();
     };
     if (e.nativeEvent.isComposing) return;
+    if (ctrl.s.chartSelected && !ctrl.s.editing) {
+      if (key === 'Delete' || key === 'Backspace') return handled(), ctrl.deleteChart(ctrl.s.chartSelected);
+      if (key === 'Escape') return handled(), ctrl.set({ chartSelected: null });
+    }
     if (mod && !e.altKey) {
       const k = key.toLowerCase();
       if (k === 'z') return handled(), e.shiftKey ? ctrl.redo() : ctrl.undo();
@@ -634,6 +766,10 @@ export function Grid() {
       if (k === 'i') return handled(), ctrl.toggleStyle('italic');
       if (k === 'u') return handled(), ctrl.toggleStyle('underline');
       if (k === '5') return handled(), ctrl.toggleStyle('strike');
+      if (e.shiftKey && (k === 'l' || k === 'e' || k === 'r')) {
+        handled();
+        return ctrl.applyStyle({ hAlign: k === 'l' ? 'left' : k === 'e' ? 'center' : 'right' }, 'Perataan');
+      }
       if (k === 'a') {
         handled();
         const { rows, cols } = ctrl.axes();
@@ -797,6 +933,8 @@ export function Grid() {
         </ContextMenu.Trigger>
         <GridContextMenu onAfter={focusSink} onAutofit={autofit} />
       </ContextMenu.Root>
+
+      <ChartLayer scrollEl={() => scrollRef.current} scroll={scroll} />
 
       {/* Keyboard sink: receives keys, copy, cut and paste for the grid. */}
       <textarea

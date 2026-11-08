@@ -166,3 +166,31 @@ export function moveRefsInFormula(
     return n;
   });
 }
+
+/**
+ * Rewrites references after rows or columns were reordered: `map` gives the new index of an
+ * old one (identity outside the moved span). A reference follows the cell it pointed at; the
+ * two ends of a range are mapped one by one, so a range that straddles the move is normalised.
+ */
+export function permuteRefsInFormula(formula: string, formulaSheet: string, sheetName: string, axis: 'row' | 'col', map: (i: number) => number): string {
+  return rewrite(formula, (n) => {
+    if (!sameSheet(n.sheet, formulaSheet, sheetName)) return n;
+    if (n.type === 'ref') {
+      const v = n.ref[axis];
+      if (v < 0) return n;
+      const m = map(v);
+      return m === v ? n : { ...n, ref: { ...n.ref, [axis]: m } };
+    }
+    if ((n.kind === 'cols' && axis === 'row') || (n.kind === 'rows' && axis === 'col')) return n;
+    const s = n.start[axis];
+    const e = n.end[axis];
+    if (s < 0 || e < 0) return n;
+    const ms = map(s);
+    const me = map(e);
+    if (ms === s && me === e) return n;
+    const lo = Math.min(ms, me);
+    const hi = Math.max(ms, me);
+    const startFirst = s <= e;
+    return { ...n, start: { ...n.start, [axis]: startFirst ? lo : hi }, end: { ...n.end, [axis]: startFirst ? hi : lo } };
+  });
+}

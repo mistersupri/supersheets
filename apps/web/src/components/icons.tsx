@@ -9,6 +9,14 @@ import {
   ArrowDownZA,
   Baseline,
   Calculator,
+  ChartArea,
+  ChartBar,
+  ChartColumn,
+  ChartLine,
+  ChartPie,
+  ChartScatter,
+  LockOpen,
+  Pipette,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -50,6 +58,7 @@ import {
   RotateCcw,
   RotateCw,
   Scissors,
+  SquareDashedMousePointer,
   ClipboardPaste,
   Search,
   Settings,
@@ -148,6 +157,40 @@ export const Icon = {
   Rows: wrap(Rows3),
   Cols: wrap(Columns3),
   Shield: wrap(ShieldCheck),
+  Pipette: wrap(Pipette),
+  PickRange: wrap(SquareDashedMousePointer),
+  Unlock: wrap(LockOpen),
+  ChartColumn: wrap(ChartColumn),
+  ChartBar: wrap(ChartBar),
+  ChartLine: wrap(ChartLine),
+  ChartPie: wrap(ChartPie),
+  ChartArea: wrap(ChartArea),
+  ChartScatter: wrap(ChartScatter),
 };
 
 export type IconName = keyof typeof Icon;
+
+export type BorderKind = 'all' | 'outer' | 'inner' | 'top' | 'bottom' | 'left' | 'right' | 'none';
+
+/**
+ * Border menu glyphs. lucide has no per-side border icons, so these are drawn on the same
+ * 16px grid and stroke: faint lines are the cell grid, bold lines are the edges the action sets.
+ */
+export function BorderGlyph({ kind, size = 16 }: { kind: BorderKind; size?: number }) {
+  const on = (side: 'top' | 'bottom' | 'left' | 'right' | 'cross') => {
+    if (kind === 'all') return true;
+    if (kind === 'outer') return side !== 'cross';
+    if (kind === 'inner') return side === 'cross';
+    return kind === side;
+  };
+  const line = (d: string, bold: boolean) => <path d={d} strokeWidth={bold ? 2 : 1} opacity={bold ? 1 : 0.28} strokeDasharray={bold ? undefined : '1.5 1.5'} />;
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeLinecap="square" aria-hidden="true" focusable="false">
+      {line('M2 2.5h12', on('top'))}
+      {line('M2 13.5h12', on('bottom'))}
+      {line('M2.5 2v12', on('left'))}
+      {line('M13.5 2v12', on('right'))}
+      {line('M8 3v10M3 8h10', on('cross'))}
+    </svg>
+  );
+}

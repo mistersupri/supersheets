@@ -18,7 +18,7 @@ export async function sheetPayload(worksheetId: string) {
     metadata: (ws.metadata?.data ?? {}) as SheetMetadata,
     validations: ws.dataValidations.map((v) => ({ id: v.id, range: v.range, rule: v.rule })),
     conditionalFormats: ws.conditionalFormats.map((v) => ({ id: v.id, range: v.range, rule: v.rule })),
-    protectedRanges: ws.protectedRanges.map((p) => ({ id: p.id, range: p.range, description: p.description, editorIds: p.editorIds })),
+    protectedRanges: ws.protectedRanges.map((p) => ({ id: p.id, range: p.range, description: p.description, editorIds: p.editorIds, exceptRanges: p.exceptRanges })),
   };
 }
 

@@ -18,11 +18,13 @@ import {
   isError,
   Merge,
   moveRefsInFormula,
+  permuteRefsInFormula,
   normalizeStyle,
   parseInput,
   parseRangeA1,
   PresenceUser,
   ProtectedRangeRecord,
+  type ChartSpec,
   RangeAddress,
   rangeContains,
   rangesIntersect,
@@ -38,6 +40,7 @@ import { createStore, type StoreApi } from 'zustand/vanilla';
 import { toast } from 'sonner';
 import { api, errorMessage } from '../lib/api';
 import { Axis } from './geometry';
+import { defaultChart, readChart, type ChartData } from './charts';
 import { fontFor, wrapLines } from './render';
 import { CellSnapshot, CellWrite, SheetPatch, SheetPayload, UndoEntry, WorkbookModel } from './model';
 import { SaveStatus, SyncManager } from './sync';
@@ -110,6 +113,7 @@ export type DialogName =
   | 'mobileFormula'
   | 'mobileFormat'
   | 'mobileMenu'
+  | 'chart'
   | null;
 
 export interface EditorState {
@@ -127,6 +131,14 @@ export interface EditorState {
   remoteSelections: Record<string, { userId: string; sheetId?: string; selection?: PresenceUser['selection'] }>;
   panel: 'history' | 'comments' | null;
   dialog: DialogName;
+  /** The chart currently selected on the sheet, if any. */
+  chartSelected: string | null;
+  /** The chart the chart dialog is editing; a new chart only joins the sheet when saved. */
+  chartDraft: { spec: ChartSpec; isNew: boolean } | null;
+  /** A yes/no question shown before a destructive action. */
+  /** While set, the grid is picking a range for a dialog field instead of editing. */
+  rangePick: { onPick: (a1: string) => void } | null;
+  confirm: { title: string; message: string; action: string; onConfirm: () => void } | null;
   copyRange: ({ sheetId: string; cut: boolean } & RangeAddress) | null;
   comments: CommentThread[];
   commentDraftCell: string | null;
@@ -194,6 +206,10 @@ export class EditorController {
       remoteSelections: {},
       panel: null,
       dialog: null,
+      confirm: null,
+      chartSelected: null,
+      chartDraft: null,
+      rangePick: null,
       copyRange: null,
       comments: [],
       commentDraftCell: null,
@@ -645,7 +661,14 @@ export class EditorController {
     const sheet = this.model.sheet(sheetId);
     for (const p of sheet?.protectedRanges ?? []) {
       if (p.editorIds.includes(this.userId)) continue;
-      if (!p.range) return 'Sheet ini dilindungi.';
+      if (!p.range) {
+        const open = (p.exceptRanges ?? []).some((x) => {
+          const e = parseRangeA1(x);
+          return !!e && rangeContains(e, row, col);
+        });
+        if (open) continue;
+        return 'Sheet ini dilindungi.';
+      }
       const r = parseRangeA1(p.range);
       if (r && rangeContains(r, row, col)) return `Rentang ${p.range} dilindungi.`;
     }
@@ -1250,7 +1273,10 @@ export class EditorController {
         .filter((x): x is T => !!x);
     sheet.validations = remap(sheet.validations);
     sheet.conditionalFormats = remap(sheet.conditionalFormats);
-    sheet.protectedRanges = remap(sheet.protectedRanges);
+    sheet.protectedRanges = remap(sheet.protectedRanges).map((p) => ({
+      ...p,
+      exceptRanges: (p.exceptRanges ?? []).map((x) => shiftA1(x, op)).filter((x): x is string => typeof x === 'string'),
+    }));
     this.model.notify();
   }
 
@@ -1333,19 +1359,197 @@ export class EditorController {
     this.patchSheet(sheet.id, patch, 'Bekukan');
   }
 
+  /** Drag-and-drop of the selected cells: the same as cut and paste, so references follow. */
+  moveCells(dr: number, dc: number) {
+    if (!dr && !dc) return;
+    const r = this.selectionRange();
+    const dest = { row: r.r1 + dr, col: r.c1 + dc };
+    if (dest.row < 0 || dest.col < 0) return;
+    this.copy(true);
+    this.select(dest);
+    this.paste(null);
+  }
+
+  /**
+   * Drag-and-drop of whole rows or columns: the block [a, b] lands before index `to`.
+   * Cells, formulas that point at them, sizes and hidden state follow; one undo step.
+   */
+  moveLines(axis: 'row' | 'col', a: number, b: number, to: number) {
+    if (to >= a && to <= b + 1) return;
+    if (!this.s.can.edit) return void toast.message('Anda hanya dapat melihat workbook ini.');
+    const sheet = this.sheet()!;
+    const sid = sheet.id;
+    const n = b - a + 1;
+    const lo = Math.min(a, to);
+    const hi = to < a ? b : to - 1;
+    const map = (i: number) => {
+      if (to < a) return i >= to && i < a ? i + n : i >= a && i <= b ? i - (a - to) : i;
+      return i >= a && i <= b ? i + (to - n - a) : i > b && i <= hi ? i - n : i;
+    };
+    const md = sheet.metadata;
+    const lineOf = (m: { r1: number; r2: number; c1: number; c2: number }) => (axis === 'row' ? [m.r1, m.r2] : [m.c1, m.c2]);
+    if ((md.merges ?? []).some((m) => lineOf(m)[1] >= lo && lineOf(m)[0] <= hi)) {
+      return void toast.error('Tidak dapat memindahkan: ada sel gabungan di antara posisi awal dan tujuan.', { description: 'Pisahkan sel dulu, lalu pindahkan.' });
+    }
+    const f = this.activeFilter();
+    if (f && (axis === 'row' ? f.r2 >= lo && f.r1 <= hi : f.c2 >= lo && f.c1 <= hi)) {
+      return void toast.error('Tidak dapat memindahkan: area ini memakai filter.', { description: 'Hapus filter dulu, lalu pindahkan.' });
+    }
+    const inSpan = (row: number, col: number) => (axis === 'row' ? row >= lo && row <= hi : col >= lo && col <= hi);
+    const writes: CellWrite[] = [];
+    const moved: { row: number; col: number; raw: string; style: CellSnapshot['style'] }[] = [];
+    for (const s of this.model.sheets) {
+      for (const c of this.model.engine.cells(s.id)) {
+        const here = s.id === sid;
+        const raw = c.raw.startsWith('=') ? permuteRefsInFormula(c.raw, s.title, sheet.title, axis, map) : c.raw;
+        if (here && inSpan(c.row, c.col)) {
+          const row = axis === 'row' ? map(c.row) : c.row;
+          const col = axis === 'col' ? map(c.col) : c.col;
+          moved.push({ row, col, raw, style: this.model.style(sid, c.row, c.col) });
+          // Clear the old spot unless something lands there.
+          writes.push({ sheetId: sid, row: c.row, col: c.col, raw: '', style: null });
+        } else if (raw !== c.raw) {
+          writes.push({ sheetId: s.id, row: c.row, col: c.col, raw });
+        }
+      }
+    }
+    // Later writes win, so the landing cells come after the clears.
+    for (const m of moved) writes.push({ sheetId: sid, row: m.row, col: m.col, raw: m.raw, style: m.style });
+    const remap = (rec: Record<number, number> | undefined) => {
+      const out: Record<number, number> = {};
+      for (const [k, v] of Object.entries(rec ?? {})) out[map(Number(k))] = v;
+      return out;
+    };
+    const patch: Partial<typeof md> = axis === 'row' ? { rowHeights: remap(md.rowHeights), hiddenRows: (md.hiddenRows ?? []).map(map).sort((x, y) => x - y) } : { colWidths: remap(md.colWidths), hiddenCols: (md.hiddenCols ?? []).map(map).sort((x, y) => x - y) };
+    const label = axis === 'row' ? 'Pindahkan baris' : 'Pindahkan kolom';
+    if (!this.write(writes, label, [{ sheetId: sid, patch: { metadata: patch } }])) return;
+    const start = map(a);
+    const { rows, cols } = this.axes();
+    if (axis === 'row') this.select({ row: start, col: 0 }, { row: start + n - 1, col: cols.count - 1 });
+    else this.select({ row: 0, col: start }, { row: rows.count - 1, col: start + n - 1 });
+  }
+
+  /** Let the user drag a range on the grid for a dialog field, starting from its current text. */
+  pickRange(current: string, onPick: (a1: string) => void) {
+    const r = parseRangeA1(current.trim().toUpperCase());
+    if (r) this.select({ row: r.r1, col: r.c1 }, { row: r.r2, col: r.c2 });
+    this.set({ rangePick: { onPick } });
+  }
+
+  finishRangePick(accept: boolean) {
+    const pick = this.s.rangePick;
+    if (!pick) return;
+    this.set({ rangePick: null });
+    if (accept) pick.onPick(formatRangeA1(this.selectionRange()));
+  }
+
+  // ---------- charts ----------
+
+  charts(sheetId = this.s.activeSheetId): ChartSpec[] {
+    return this.model.sheet(sheetId)?.metadata.charts ?? [];
+  }
+
+  /** Reads the data a chart shows, straight from the live cell values. */
+  chartData(spec: ChartSpec): ChartData {
+    return readChart(spec, (row, col) => this.model.value(this.s.activeSheetId, row, col));
+  }
+
+  private saveCharts(next: ChartSpec[], label: string) {
+    this.patchSheet(this.s.activeSheetId, { metadata: { charts: next } }, label);
+  }
+
+  /** Makes a chart from the selection (or the data block around the cell) and opens its settings. */
+  insertChart() {
+    if (!this.s.can.edit) return void toast.message('Anda hanya dapat melihat workbook ini.');
+    const sid = this.s.activeSheetId;
+    let r = this.selectionRange();
+    if (r.r1 === r.r2 && r.c1 === r.c2) r = this.dataRegion(r.r1, r.c1);
+    r = this.clampToUsed(r);
+    const hasNumbers = (() => {
+      for (let row = r.r1; row <= r.r2; row++) for (let col = r.c1; col <= r.c2; col++) if (typeof this.model.value(sid, row, col) === 'number') return true;
+      return false;
+    })();
+    if (!hasNumbers) return void toast.message('Pilih sel yang berisi angka untuk dibuat bagan.', { description: 'Sertakan baris judul dan kolom label bila ada.' });
+    const fmt = this.model.style(sid, r.r1 + 1, r.c1)?.numberFormat ?? '';
+    const dates = /y|mmm|d{1,2}[/.-]/i.test(fmt);
+    const id = Math.random().toString(36).slice(2, 10);
+    // Put it beside the data, where it does not cover it.
+    const spec = defaultChart(r, id, { row: r.r1, col: r.c2 + 2 }, dates);
+    // A header row exists when the first row has no numbers.
+    let firstRowNumeric = false;
+    for (let col = r.c1 + 1; col <= r.c2; col++) if (typeof this.model.value(sid, r.r1, col) === 'number') firstRowNumeric = true;
+    spec.headerRow = !firstRowNumeric;
+    // A label column exists when the first column has no numbers.
+    let firstColNumeric = false;
+    for (let row = r.r1 + (spec.headerRow ? 1 : 0); row <= r.r2; row++) if (typeof this.model.value(sid, row, r.c1) === 'number') firstColNumeric = true;
+    spec.headerCol = !firstColNumeric && r.c2 > r.c1;
+    this.set({ chartDraft: { spec, isNew: true }, dialog: 'chart' });
+  }
+
+  editChart(id: string) {
+    const spec = this.charts().find((c) => c.id === id);
+    if (spec && this.s.can.edit) this.set({ chartDraft: { spec: structuredClone(spec), isNew: false }, chartSelected: id, dialog: 'chart' });
+  }
+
+  saveChartDraft(spec: ChartSpec) {
+    const exists = this.charts().some((c) => c.id === spec.id);
+    this.saveCharts(exists ? this.charts().map((c) => (c.id === spec.id ? spec : c)) : [...this.charts(), spec], exists ? 'Ubah bagan' : 'Tambah bagan');
+    this.set({ chartSelected: spec.id, chartDraft: null });
+  }
+
+  updateChart(id: string, patch: Partial<ChartSpec>, label = 'Ubah bagan') {
+    this.saveCharts(this.charts().map((c) => (c.id === id ? { ...c, ...patch } : c)), label);
+  }
+
+  deleteChart(id: string) {
+    if (!this.s.can.edit) return;
+    this.saveCharts(this.charts().filter((c) => c.id !== id), 'Hapus bagan');
+    if (this.s.chartSelected === id) this.set({ chartSelected: null });
+  }
+
+  duplicateChart(id: string) {
+    const src = this.charts().find((c) => c.id === id);
+    if (!src || !this.s.can.edit) return;
+    const copy = { ...src, id: Math.random().toString(36).slice(2, 10), dx: src.dx + 24, dy: src.dy + 24 };
+    this.saveCharts([...this.charts(), copy], 'Gandakan bagan');
+    this.set({ chartSelected: copy.id });
+  }
+
+  /** Ask before going ahead; the dialog lives in EditorDialogs. */
+  askConfirm(title: string, message: string, action: string, onConfirm: () => void) {
+    this.set({ confirm: { title, message, action, onConfirm } });
+  }
+
   merge() {
     const r = this.selectionRange();
     if (r.r1 === r.r2 && r.c1 === r.c2) return;
     const sheet = this.sheet()!;
     const sid = sheet.id;
+    // A merged block cannot follow a frozen pane, which stays put while the rest scrolls.
+    if (r.r1 < sheet.frozenRows || r.c1 < sheet.frozenColumns) {
+      toast.error('Sel tidak dapat digabungkan di area yang dibekukan.', { description: 'Cairkan baris atau kolom beku lewat menu Tampilan, lalu gabungkan lagi.' });
+      return;
+    }
+    const lost: number[][] = [];
+    this.forEachInRange(this.clampToUsed(r), (row, col) => {
+      if ((row !== r.r1 || col !== r.c1) && this.model.raw(sid, row, col) !== '') lost.push([row, col]);
+    });
+    const go = () => this.applyMerge(r, lost);
+    if (lost.length === 0) return go();
+    this.askConfirm(
+      'Gabungkan sel yang berisi data?',
+      `${lost.length} sel di dalam ${formatRangeA1(r)} berisi data. Hanya nilai sel kiri atas (${formatA1(r.r1, r.c1)}) yang dipertahankan, sisanya dihapus. Urungkan dengan Ctrl+Z.`,
+      'Gabungkan',
+      go,
+    );
+  }
+
+  private applyMerge(r: RangeAddress, lost: number[][]) {
+    const sheet = this.sheet()!;
+    const sid = sheet.id;
     const merges = (sheet.metadata.merges ?? []).filter((m) => !rangesIntersect(m, r));
     merges.push({ r1: r.r1, c1: r.c1, r2: r.r2, c2: r.c2 });
-    // Only the top-left value is kept, as in other spreadsheets.
-    const writes: CellWrite[] = [];
-    this.forEachInRange(this.clampToUsed(r), (row, col) => {
-      if ((row !== r.r1 || col !== r.c1) && this.model.raw(sid, row, col) !== '') writes.push({ sheetId: sid, row, col, raw: '' });
-    });
-    if (writes.length) toast.message('Hanya nilai sel kiri atas yang dipertahankan.');
+    const writes: CellWrite[] = lost.map(([row, col]) => ({ sheetId: sid, row, col, raw: '' }));
     this.write(writes, 'Gabungkan sel', [{ sheetId: sid, patch: { metadata: { merges } } }]);
     this.select({ row: r.r1, col: r.c1 }, { row: r.r2, col: r.c2 });
   }
@@ -1695,7 +1899,7 @@ export class EditorController {
   async saveProtected(items: ProtectedRangeRecord[], quiet = false) {
     const sid = this.s.activeSheetId;
     const r = await api.put<{ sheet: SheetPayload }>(`/api/worksheets/${sid}/protected-ranges`, {
-      items: items.map(({ range, description, editorIds }) => ({ range, description: description ?? null, editorIds })),
+      items: items.map(({ range, description, editorIds, exceptRanges }) => ({ range, description: description ?? null, editorIds, exceptRanges: range === null ? (exceptRanges ?? []).filter((x) => parseRangeA1(x)) : [] })),
     });
     this.model.updateSheet(r.sheet);
     if (!quiet) toast.success('Perlindungan disimpan');
